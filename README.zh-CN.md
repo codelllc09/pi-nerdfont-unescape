@@ -38,15 +38,16 @@ pi install npm:pi-nerdfont-unescape
 `tests/test-nerdfont-unescape.cjs` —— 20 项回归套件，含全部历史翻车形态。
 
 **渲染正确性的最终裁决权在像素**：单测会假绿（套件头注释记录了两种
-成因）。重要改动后：真实输出一条含目标形态的消息 → 截图 →
-`python3 tests/vision-verify.py <截图)` 让视觉模型审计实际渲染。
-该工作流抓到过 12 项绿灯单测漏掉的真 bug。
+成因）。重要改动后：真实输出一条含目标形态的消息 → 截图 → 让视觉
+模型审计**像素**——禁止把提取出的/还原后的文本发给它冒充验证，文本
+验证不了渲染。该工作流抓到过 12 项绿灯单测漏掉的真 bug。
 
-视觉模型**不写死**——解析顺序：`PI_VISION_MODEL` / `PI_VISION_BASE_URL` /
-`PI_VISION_API_KEY` 环境变量 → `~/.config/pi-nerdfont-unescape/vision.json`
-→ pi 当前主模型（吃图就直接用，拒图则**有痕降级**）→ 兜底默认
-（`glm-5.3-flash`，pi 自带凭证）。任何 OpenAI 兼容端点均可，fork 请用
-前两级设置自己的模型。
+会话模型本身能看图 → agent 直接 read 截图即可，不跑脚本（判断零成本：
+试着 read 一张 png，pi 会明说模型支不支持图片）。否则跑
+`python3 tests/vision-verify.py <截图>`。视觉模型**不写死**——解析顺序：
+`PI_VISION_MODEL` / `PI_VISION_BASE_URL` / `PI_VISION_API_KEY` 环境变量 →
+`~/.config/pi-nerdfont-unescape/vision.json` → 兜底默认（`glm-5.3-flash`，
+pi 自带凭证）。任何 OpenAI 兼容端点均可，fork 请用前两级设置自己的模型。
 
 ## 设计史（浓缩）
 

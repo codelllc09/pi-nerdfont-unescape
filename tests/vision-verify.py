@@ -9,15 +9,23 @@ r"""vision-verify.py — 视觉端到端验证（本仓库最重要的测试手�
 （配套教训：JS 正则 \uXXXX 只吃 4 位十六进制；双反斜杠输入走的是字面
 逃生舱路径，测不到保护逻辑——两种"假绿"成因见 test-nerdfont-unescape.cjs）
 
+本脚本的存在前提：**会话主模型是纯文本的**（agent 自己看不了图）。
+若会话模型能看图，不要跑本脚本——agent 用 read 工具直接读截图即可
+（判断方法零成本：读一张 png，pi 会明说 "Current model does not
+support images"；能读就是能看）。
+
 模型配置（按优先级，fork 本仓库请用 ① 或 ② 设置你自己的）：
   ① 环境变量  PI_VISION_MODEL / PI_VISION_BASE_URL / PI_VISION_API_KEY
   ② 配置文件  ~/.config/pi-nerdfont-unescape/vision.json
               {"model": "...", "base_url": "...", "api_key": "..."}
               （任何 OpenAI 兼容端点均可；api_key 也可省略而用环境变量注入）
-  ③ 当前主模型 Pi 的 defaultModel——若它本就吃图则直接用，无需另配；
-              拒图（参数类 4xx）自动降级到 ④，不静默也不报错打扰
-  ④ 兜底默认  读 Pi 的 ~/.pi/agent/auth.json（zai-coding-cn）+
+  ③ 兜底默认  读 Pi 的 ~/.pi/agent/auth.json（zai-coding-cn）+
               coding 端点 + glm-5.3-flash（本机默认，视觉可用且廉价）
+候选拒图（参数类 4xx）或空响应时自动降级下一候选，stderr 留痕不静默。
+
+⚠ 视觉验证的输入必须是**截图（像素）**。禁止把会话存档文本、断言输出、
+还原后的文本发给视觉模型冒充验证——文本验证不了渲染（v1 判例：存档
+文本看着全对，像素上保护已被绕过）。
 
 流程：截图粘贴保存到 /tmp → 本脚本调视觉模型描述 → 与预期比对。
 """
@@ -63,32 +71,6 @@ def file_cfg():
     return c if all(c.values()) else None
 
 
-def pi_model_cfg():
-    """③ 当前主模型：settings 的 defaultModel 若走已知端点且吃图，直接用。
-    是否吃图由调用侧实测（拒图自动降级），此处只解析凭证三元组。"""
-    try:
-        model = json.load(open(pi_files("settings.json")))["defaultModel"]
-    except (OSError, ValueError, KeyError):
-        return None
-    provider = None
-    if "/" in model:
-        provider, model = model.split("/", 1)
-    try:
-        auth = json.load(open(pi_files("auth.json")))
-    except (OSError, ValueError):
-        return None
-    if provider is None:
-        # 裸模型 id：恰有一个已知端点的凭证时才敢认领，否则歧义放弃
-        usable = [p for p in auth if p in KNOWN_BASE_URLS and auth[p].get("key")]
-        if len(usable) != 1:
-            return None
-        provider = usable[0]
-    if provider not in KNOWN_BASE_URLS or provider not in auth:
-        return None
-    key = auth[provider].get("key")
-    return {"model": model, "base_url": KNOWN_BASE_URLS[provider], "api_key": key} if key else None
-
-
 def fallback_cfg():
     """④ 本机兜底：pi 凭证 + coding 端点 + 廉价视觉模型。"""
     try:
@@ -99,9 +81,9 @@ def fallback_cfg():
 
 
 def candidate_chain():
-    """按 ① env → ② file → ③ 当前主模型 → ④ 兜底 产出完整三元组。"""
+    """按 ① env → ② file → ③ 兜底 产出完整三元组。"""
     seen, chain = set(), []
-    for c in (env_cfg(), file_cfg(), pi_model_cfg(), fallback_cfg()):
+    for c in (env_cfg(), file_cfg(), fallback_cfg()):
         if c and c["model"] not in seen:
             seen.add(c["model"])
             chain.append(c)
