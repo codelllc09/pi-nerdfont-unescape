@@ -14,7 +14,9 @@ r"""vision-verify.py — 视觉端到端验证（本仓库最重要的测试手�
   ② 配置文件  ~/.config/pi-nerdfont-unescape/vision.json
               {"model": "...", "base_url": "...", "api_key": "..."}
               （任何 OpenAI 兼容端点均可；api_key 也可省略而用环境变量注入）
-  ③ 兜底默认  读 Pi 的 ~/.pi/agent/auth.json（zai-coding-cn）+
+  ③ 当前主模型 Pi 的 defaultModel——若它本就吃图则直接用，无需另配；
+              拒图（参数类 4xx）自动降级到 ④，不静默也不报错打扰
+  ④ 兜底默认  读 Pi 的 ~/.pi/agent/auth.json（zai-coding-cn）+
               coding 端点 + glm-5.3-flash（本机默认，视觉可用且廉价）
 
 流程：截图粘贴保存到 /tmp → 本脚本调视觉模型描述 → 与预期比对。
@@ -32,26 +34,78 @@ DEFAULT_PROMPT = (
 )
 
 
-def resolve_config():
-    cfg = {
+KNOWN_BASE_URLS = {"zai-coding-cn": "https://open.bigmodel.cn/api/coding/paas/v4"}
+
+
+def pi_files(rel):
+    return os.path.expanduser(os.path.join("~/.pi/agent", rel))
+
+
+def env_cfg():
+    c = {
         "model": os.environ.get("PI_VISION_MODEL"),
         "base_url": os.environ.get("PI_VISION_BASE_URL"),
         "api_key": os.environ.get("PI_VISION_API_KEY"),
     }
+    return c if all(c.values()) else None
+
+
+def file_cfg():
     path = os.path.expanduser("~/.config/pi-nerdfont-unescape/vision.json")
-    if os.path.isfile(path):
-        try:
-            disk = json.load(open(path))
-            cfg = {k: cfg[k] or disk.get(k) for k in cfg}
-        except (OSError, ValueError) as e:
-            print(f"警告: 配置文件 {path} 解析失败({e})，忽略之", file=sys.stderr)
-    if not (cfg["model"] and cfg["base_url"] and cfg["api_key"]):
-        # 兜底：Pi 自带的凭证与本机默认模型（fork 请用上面两级覆盖）
-        auth = json.load(open(os.path.expanduser("~/.pi/agent/auth.json")))
-        cfg["model"] = cfg["model"] or "glm-5.3-flash"
-        cfg["base_url"] = cfg["base_url"] or "https://open.bigmodel.cn/api/coding/paas/v4"
-        cfg["api_key"] = cfg["api_key"] or auth["zai-coding-cn"]["key"]
-    return cfg
+    if not os.path.isfile(path):
+        return None
+    try:
+        c = json.load(open(path))
+    except (OSError, ValueError) as e:
+        print(f"警告: 配置文件 {path} 解析失败({e})，忽略之", file=sys.stderr)
+        return None
+    c = {k: c.get(k) for k in ("model", "base_url", "api_key")}
+    return c if all(c.values()) else None
+
+
+def pi_model_cfg():
+    """③ 当前主模型：settings 的 defaultModel 若走已知端点且吃图，直接用。
+    是否吃图由调用侧实测（拒图自动降级），此处只解析凭证三元组。"""
+    try:
+        model = json.load(open(pi_files("settings.json")))["defaultModel"]
+    except (OSError, ValueError, KeyError):
+        return None
+    provider = None
+    if "/" in model:
+        provider, model = model.split("/", 1)
+    try:
+        auth = json.load(open(pi_files("auth.json")))
+    except (OSError, ValueError):
+        return None
+    if provider is None:
+        # 裸模型 id：恰有一个已知端点的凭证时才敢认领，否则歧义放弃
+        usable = [p for p in auth if p in KNOWN_BASE_URLS and auth[p].get("key")]
+        if len(usable) != 1:
+            return None
+        provider = usable[0]
+    if provider not in KNOWN_BASE_URLS or provider not in auth:
+        return None
+    key = auth[provider].get("key")
+    return {"model": model, "base_url": KNOWN_BASE_URLS[provider], "api_key": key} if key else None
+
+
+def fallback_cfg():
+    """④ 本机兜底：pi 凭证 + coding 端点 + 廉价视觉模型。"""
+    try:
+        key = json.load(open(pi_files("auth.json")))["zai-coding-cn"]["key"]
+    except (OSError, ValueError, KeyError):
+        return None
+    return {"model": "glm-5.3-flash", "base_url": KNOWN_BASE_URLS["zai-coding-cn"], "api_key": key}
+
+
+def candidate_chain():
+    """按 ① env → ② file → ③ 当前主模型 → ④ 兜底 产出完整三元组。"""
+    seen, chain = set(), []
+    for c in (env_cfg(), file_cfg(), pi_model_cfg(), fallback_cfg()):
+        if c and c["model"] not in seen:
+            seen.add(c["model"])
+            chain.append(c)
+    return chain
 
 
 def main():
@@ -60,30 +114,50 @@ def main():
         return 1
     png = sys.argv[1]
     prompt = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_PROMPT
-    cfg = resolve_config()
-    print(f"[vision] {cfg['model']} @ {cfg['base_url']}", file=sys.stderr)
-
     img = base64.b64encode(open(png, "rb").read()).decode()
-    body = json.dumps({
-        "model": cfg["model"],
-        "max_tokens": 2000,  # flash 系会先花 token 于 reasoning，留足余量
-        "messages": [{"role": "user", "content": [
-            {"type": "text", "text": prompt},
-            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img}"}},
-        ]}],
-    }).encode()
-    req = urllib.request.Request(
-        cfg["base_url"].rstrip("/") + "/chat/completions",
-        data=body,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {cfg['api_key']}"},
-    )
-    with urllib.request.urlopen(req, timeout=300) as r:
-        out = json.load(r)
-    c = out["choices"][0]["message"].get("content") or ""
-    if isinstance(c, list):
-        c = "".join(x.get("text", "") for x in c if isinstance(x, dict))
-    if not c.strip():
-        print("错误: 模型返回空内容（reasoning 可能耗尽 max_tokens，请调大）", file=sys.stderr)
+    chain = candidate_chain()
+    if not chain:
+        print("错误: 找不到任何可用的视觉模型配置（见文件头注释的 ①② 两级）", file=sys.stderr)
+        return 1
+
+    c = None
+    for cfg in chain:
+        print(f"[vision] 尝试 {cfg['model']} @ {cfg['base_url']}", file=sys.stderr)
+        body = json.dumps({
+            "model": cfg["model"],
+            "max_tokens": 2000,  # flash 系会先花 token 于 reasoning，留足余量
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img}"}},
+            ]}],
+        }).encode()
+        req = urllib.request.Request(
+            cfg["base_url"].rstrip("/") + "/chat/completions",
+            data=body,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {cfg['api_key']}"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=300) as r:
+                out = json.load(r)
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")
+            # 参数类拒绝（如 glm-5.3 不吃图）→ 降级下一候选，非静默
+            if e.code == 400 and ("image" in detail.lower() or "type" in detail.lower() or "参数" in detail):
+                print(f"[vision] {cfg['model']} 拒图，降级: {detail[:120]}", file=sys.stderr)
+                continue
+            print(f"错误: {cfg['model']} HTTP {e.code}: {detail[:300]}", file=sys.stderr)
+            return 1
+        c = out["choices"][0]["message"].get("content") or ""
+        if isinstance(c, list):
+            c = "".join(x.get("text", "") for x in c if isinstance(x, dict))
+        if not c.strip():
+            # 空内容多为 reasoning 耗尽 max_tokens——换下一候选而非静默
+            print(f"[vision] {cfg['model']} 返回空内容，降级", file=sys.stderr)
+            c = None
+            continue
+        break
+    if not c or not c.strip():
+        print("错误: 链上全部候选失败（空内容或拒图）", file=sys.stderr)
         return 1
     print(c.strip())
     return 0

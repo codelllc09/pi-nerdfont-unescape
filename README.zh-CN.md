@@ -44,8 +44,9 @@ pi install npm:pi-nerdfont-unescape
 
 视觉模型**不写死**——解析顺序：`PI_VISION_MODEL` / `PI_VISION_BASE_URL` /
 `PI_VISION_API_KEY` 环境变量 → `~/.config/pi-nerdfont-unescape/vision.json`
-→ 兜底默认（pi 自带凭证 + `glm-5.3-flash`）。任何 OpenAI 兼容端点均可，
-fork 请用前两级设置自己的模型。
+→ pi 当前主模型（吃图就直接用，拒图则**有痕降级**）→ 兜底默认
+（`glm-5.3-flash`，pi 自带凭证）。任何 OpenAI 兼容端点均可，fork 请用
+前两级设置自己的模型。
 
 ## 设计史（浓缩）
 

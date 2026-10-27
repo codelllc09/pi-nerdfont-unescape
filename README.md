@@ -51,9 +51,10 @@ green unit tests missed.
 
 The vision model is **not hardcoded** — resolve order: `PI_VISION_MODEL` /
 `PI_VISION_BASE_URL` / `PI_VISION_API_KEY` env vars →
-`~/.config/pi-nerdfont-unescape/vision.json` → fallback default (Pi's own
-credentials + `glm-5.3-flash`). Any OpenAI-compatible endpoint works; forks
-should set level ① or ②.
+`~/.config/pi-nerdfont-unescape/vision.json` → Pi's current session model
+(if it accepts image input — a rejection falls through visibly) → fallback
+default (`glm-5.3-flash` via Pi's credentials). Any OpenAI-compatible
+endpoint works; forks should set level ① or ②.
 
 ## Design history (condensed)
 
