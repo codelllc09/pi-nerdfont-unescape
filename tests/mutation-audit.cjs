@@ -1,0 +1,149 @@
+#!/usr/bin/env node
+/**
+ * mutation-audit.cjs — 用代码审计测试：逐个故意改坏扩展源码（变异），
+ * 对应测试必须变红；红不了的测试 = 摆设（从未能证明自己会失败）。
+ *
+ * 运行: node tests/mutation-audit.cjs   （不改动仓库内源文件，变异体写 /tmp）
+ * 原则: 测试的对错交给代码——本审计零模型参与，退出码即结论。
+ *
+ * 判定：
+ *   - 无效变异（没杀死任何测试）→ 审计失败
+ *   - 从未变红过的测试名 → 审计失败（装饰品）
+ */
+const { spawnSync } = require("child_process");
+const fs = require("fs");
+const path = require("path");
+
+const ROOT = __dirname + "/..";
+const SRC = path.join(ROOT, "nerdfont-unescape.ts");
+const MUTATED = "/tmp/pi-mutated-ext.ts";
+const SUITES = {
+  1: path.join(ROOT, "tests/test-nerdfont-unescape.cjs"),
+  2: path.join(ROOT, "tests/test-tools.cjs"),
+};
+
+// 每条变异：锚点（源码中必须恰好出现一次）→ 替换 → 应杀死的测试所在套件
+const MUTATIONS = [
+  { name: "M1 还原禁用", suites: [1],
+    old: "return String.fromCodePoint(cp);", new: "return whole;" },
+  { name: "M2 括号形式失效", suites: [1],
+    old: "const cp = parseInt(brace ?? plain!, 16);", new: 'const cp = parseInt(plain ?? "10ffff", 16);' },
+  { name: "M3 逃生舱失效", suites: [1],
+    old: 'return "\\\\uLIT" + (literals.length - 1) + ";";', new: "return m;" },
+  { name: "M4 可见替换失效", suites: [1],
+    old: "if (isInherentlyInvisible(cp) || notInFonts) {", new: "if (false) {" },
+  { name: "M5 补框禁用", suites: [1],
+    old: "if (ICON_CONTEXT.test(text)) {", new: "if (false) {" },
+  { name: "M6 补框行内保护失效", suites: [1],
+    old: "if (protectedRanges.some(([a, b]) => start >= a && start < b)) continue;", new: "if (false) continue;" },
+  { name: "M7 围栏失效(还原通道)", suites: [1, 2],
+    old: "const FENCE = /^[ \\t]*(`{3,}|~{3,})/;", new: "const FENCE = /^(?!x)x/;" },
+  { name: "M7b 补框围栏失效", suites: [1],
+    old: "if (/^[ \\t]*(?:`{3,}|~{3,})/.test(line)) {", new: "if (false) {" },
+  { name: "M8 行内保护失效", suites: [1, 2],
+    old: ".map((seg) => (seg.protected ? seg.text : unescapeLine(seg.text)))",
+    new: ".map((seg) => unescapeLine(seg.text))" },
+  { name: "M9 输入禁用", suites: [1, 2],
+    old: 'return { action: "transform", text: out };', new: 'return { action: "continue" };' },
+  { name: "M10 流快照禁用", suites: [1],
+    old: "streamSeenCps.add(cp);", new: "void cp;" },
+  { name: "M11 流比较失效(恒报丢失)", suites: [1, 2],
+    old: "(cp) => !finalText.includes(String.fromCodePoint(cp)),", new: "() => true," },
+  { name: "M12 注入不追加", suites: [2],
+    old: "event.systemPrompt +", new: '"" +' },
+  { name: "M13a 注入无协议名", suites: [2],
+    old: "[nerdfont-unescape 输出协议]", new: "[协议]" },
+  { name: "M13b 注入无逃生舱说明", suites: [2],
+    old: "写双反斜杠 \\\\uXXXX，客户端不会还原它", new: "写双反斜线 \\\\uXXXX" },
+  { name: "M14 lookup 查询失效", suites: [2],
+    old: '["-c", NF_LOOKUP_PY, String(params.query), String(params.limit ?? 20)],',
+    new: '["-c", NF_LOOKUP_PY, "__nomatch__", String(params.limit ?? 20)],' },
+  { name: "M15 lookup 致崩", suites: [2],
+    old: 'async execute(_toolCallId, params) {\n      const out = await new Promise<string>((resolve) => {\n        execFile(\n          "python3",\n          ["-c", NF_LOOKUP_PY,',
+    new: 'async execute(_toolCallId, params) {\n      throw new Error("mutated");\n      const out = await new Promise<string>((resolve) => {\n        execFile(\n          "python3",\n          ["-c", NF_LOOKUP_PY,' },
+  { name: "M16 render 内容失效", suites: [2],
+    old: 'child.stdin?.end(params.content ?? "");', new: 'child.stdin?.end("__mutated__");' },
+  { name: "M17 通知计数失效", suites: [2],
+    old: "(c === 1 ? n : `${n} ×${c}`)", new: "(n)" },
+  { name: "M18 流角色检查失效", suites: [2], count: 2,
+    old: 'if (msg?.role !== "assistant" || !Array.isArray(msg.content)) return;',
+    new: "if (!Array.isArray(msg.content)) return;" },
+  { name: "M19 工具注册禁用", suites: [2], count: 2,
+    old: "  pi.registerTool({", new: "  if (false) pi.registerTool({" },
+  { name: "M20 render 边框失效", suites: [2],
+    old: 'params.frame ?? "none"', new: '"none"' },
+  { name: "M21 render 写盘失效", suites: [2],
+    old: 'params.writePath ?? ""', new: '""' },
+  { name: "M22 输入恒转换", suites: [2],
+    old: 'if (escaped.length === 0) return { action: "continue" };',
+    new: 'if (false) return { action: "continue" };' },
+  { name: "M23 输入通知级别翻转", suites: [2],
+    old: 'the model receives the escapes`,\n      "warning",',
+    new: 'the model receives the escapes`,\n      "info",' },
+];
+
+const src = fs.readFileSync(SRC, "utf8");
+
+function runSuite(id) {
+  const r = spawnSync("node", [SUITES[id]], {
+    env: { ...process.env, EXT_PATH: MUTATED },
+    encoding: "utf8", timeout: 120000,
+  });
+  const out = r.stdout || "";
+  const failed = [];
+  for (const line of out.split("\n")) {
+    const m = line.match(/^  ✗ (.*)$/);
+    if (m) failed.push(m[1].split("  ")[0].trim());
+  }
+  const crashed = r.status !== 0 && failed.length === 0;
+  return { failed, crashed, tail: out.split("\n").filter(Boolean).slice(-2).join(" | ") };
+}
+
+const killedBy = new Map(); // test name -> [mutation names]
+const ineffective = [];
+const crashedNote = [];
+
+for (const mu of MUTATIONS) {
+  const want = mu.count ?? 1;
+  const count = src.split(mu.old).length - 1;
+  if (count !== want) {
+    console.error(`✗ 变异 ${mu.name} 锚点命中 ${count} 次（须恰 ${want} 次），审计中止——锚点过期需更新`);
+    process.exit(1);
+  }
+  fs.writeFileSync(MUTATED, src.split(mu.old).join(mu.new));
+  const killed = new Set();
+  let crashed = false;
+  for (const id of mu.suites) {
+    const r = runSuite(id);
+    r.failed.forEach((n) => killed.add(n));
+    if (r.crashed) { crashed = true; crashedNote.push(`${mu.name}→套件${id}`); }
+  }
+  const names = [...killed];
+  names.sort().forEach((n) => {
+    if (!killedBy.has(n)) killedBy.set(n, []);
+    killedBy.get(n).push(mu.name);
+  });
+  console.log(`${names.length || (crashed ? "套件崩溃" : "0")}  ${mu.name}${names.length ? "  ⇒ " + names.join(", ") : ""}`);
+  if (!names.length) ineffective.push(mu.name);
+}
+
+// 汇总：每个测试名都必须被至少一条变异杀死过
+const allTests = new Set();
+for (const id of [1, 2]) {
+  fs.rmSync(MUTATED, { force: true });
+  const r = spawnSync("node", [SUITES[id]], { encoding: "utf8", timeout: 120000 });
+  for (const line of (r.stdout || "").split("\n")) {
+    const m = line.match(/^  [✓✗] (.*)$/);
+    if (m) allTests.add(m[1].split("  ")[0].trim());
+  }
+}
+const uncovered = [...allTests].filter((n) => !killedBy.has(n));
+
+console.log("\n── 审计结论");
+console.log(`变异总数 ${MUTATIONS.length}；覆盖测试 ${killedBy.size}/${allTests.size}`);
+if (crashedNote.length) console.log(`套件崩溃（非断言式失败）: ${crashedNote.join(", ")}`);
+if (ineffective.length) console.log(`✗ 无效变异: ${ineffective.join(", ")}`);
+if (uncovered.length) console.log(`✗ 从未变红（装饰品嫌疑）: ${uncovered.join(", ")}`);
+if (!ineffective.length && !uncovered.length) console.log("✓ 全部测试都被证明会红，全部变异都杀死了测试");
+fs.rmSync(MUTATED, { force: true });
+process.exit(ineffective.length || uncovered.length ? 1 : 0);

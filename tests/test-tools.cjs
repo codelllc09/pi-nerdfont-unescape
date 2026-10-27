@@ -18,7 +18,7 @@ const load = createJiti(__filename, {
     typebox: D + "/node_modules/typebox/build/index.mjs",
   },
 });
-const mod = load("/home/user/Work/pi-nerdfont-unescape/nerdfont-unescape.ts");
+const mod = load(process.env.EXT_PATH || "/home/user/Work/pi-nerdfont-unescape/nerdfont-unescape.ts");
 
 const handlers = {}; const tools = {}; const notes = [];
 mod.default({
@@ -39,18 +39,28 @@ run(async () => {
   t("已注册", !!tools.nerdfont_lookup && !!tools.render_preview, Object.keys(tools).join(","));
   if (tools.nerdfont_lookup) {
     const call = async (query, limit) => {
-      const r = await tools.nerdfont_lookup.execute("t", { query, ...(limit ? { limit } : {}) });
-      return r.content[0].text;
+      try {
+        const r = await tools.nerdfont_lookup.execute("t", { query, ...(limit ? { limit } : {}) });
+        return r.content[0].text;
+      } catch (e) {
+        return "THROWN: " + String(e); // 变异/回归致崩必须可见地进入断言
+      }
     };
     let out = await call("python");
     t("关键词 python → 含 E235 转义", /\\u[eE]235|U\+E235/i.test(out), JSON.stringify(out.slice(0, 120)));
-    t("族别优先（md/custom/python 靠前）", /(md-|custom-|python)/i.test(out));
+    // 断言收紧到字形行的族前缀——无命中提示文本恰含 "python"/"branch" 字样，
+    // 宽松正则曾被它喂绿（2026-10-28 变异审计判例）
+    t("族别优先（字形行带族前缀）", /(?:nf-)?(?:md|custom|seti|dev|oct|fa|pl|linux)-[a-z]/.test(out), JSON.stringify(out.slice(0, 120)));
     out = await call("U+E0A0");
-    t("码位查询 → pl-branch 在场", /branch|e0a0/i.test(out), JSON.stringify(out.slice(0, 120)));
+    t("码位查询 → E0A0 在场", /e0a0|pl-branch/i.test(out), JSON.stringify(out.slice(0, 120)));
     out = await call("starship nodejs");
     t("starship 模式 → E718", /\\u[eE]718|U\+E718/i.test(out), JSON.stringify(out.slice(0, 200)));
-    out = await call("zzz-no-such-glyph-xyz", 5);
-    t("无命中不崩溃（有输出）", typeof out === "string" && out.length > 0, JSON.stringify(String(out).slice(0, 80)));
+    try {
+      out = await call("zzz-no-such-glyph-xyz", 5);
+      t("无命中不崩溃（有输出）", typeof out === "string" && out.length > 0 && !String(out).startsWith("THROWN"), JSON.stringify(String(out).slice(0, 80)));
+    } catch (e) {
+      t("无命中不崩溃（有输出）", false, "execute 抛出: " + String(e));
+    }
   }
 
   console.log("── ⑩ render_preview 工具");
@@ -87,7 +97,8 @@ run(async () => {
   // ⚠ 陷阱第三次判例：源码里 "\uf0805" = U+F080 + 字面"5"，必须 fromCodePoint
   const astral = "a" + String.fromCodePoint(0xf0805) + String.fromCodePoint(0xe235);
   ir = await handlers["input"]({ type: "input", text: astral, source: "interactive" }, ctx);
-  t("增补区 → 括号形式", ir.text.includes("\\u{f0805}"), JSON.stringify(ir.text));
+  const it = ir.text ?? ""; // 防御：transform 失效时逐项变红而非套件崩溃
+  t("增补区 → 括号形式", ir.action === "transform" && it.includes("\\u{f0805}"), JSON.stringify(ir));
   t("通知级别 warning", notes.length > 0 && notes[notes.length - 1].t === "warning", JSON.stringify(notes.at(-1)));
 
   console.log("── ⑬ Markdown 边角（message_end）");

@@ -25,7 +25,7 @@ const load = createJiti(__filename, {
     typebox: D + "/node_modules/typebox/build/index.mjs",
   },
 });
-const mod = load("/home/user/Work/pi-nerdfont-unescape/nerdfont-unescape.ts");
+const mod = load(process.env.EXT_PATH || "/home/user/Work/pi-nerdfont-unescape/nerdfont-unescape.ts");
 
 const h = {}; const notes = [];
 mod.default({ registerTool: () => {}, on: (e, f) => { h[e] = f; } });
@@ -66,9 +66,11 @@ const t = (name, ok, detail = "") => {
   console.log("── ④ 补框 + 防误报");
   a = await end("图标是 '' 空引号");
   t("空引号补框", a.includes("'□'"), JSON.stringify(a));
-  a = await end("代码span包裹 `''` 不补");
-  t("行内段内不补框", a.includes("`''`"), JSON.stringify(a));
-  a = await end("围栏内\n```\n''\n```\n");
+  // 引号对不贴反引号（`x = ''`）：防误报规则 b) 不再独立拦截，
+  // 行内段保护与否只剩 protectedRanges 跳过逻辑——这正是要测的东西
+  a = await end("图标 `x = ''` 段内不补框 \\ue235 段外");
+  t("行内段内不补框", a.includes("`x = ''`"), JSON.stringify(a));
+  a = await end("图标\n```\n''\n```\n\\ue235");
   t("围栏内不补框", a.includes("''"), JSON.stringify(a));
 
   console.log("── ⑤ 围栏保护");
@@ -88,8 +90,9 @@ const t = (name, ok, detail = "") => {
 
   console.log("── ⑦ 输入侧自动转义");
   const ir = await h["input"]({ type: "input", text: "看 \ue235 图标", source: "interactive" }, ctx);
+  const it7 = ir.text ?? ""; // 防御：transform 失效时逐项变红而非套件崩溃
   t("transform", ir.action === "transform");
-  t("无裸字符", !hasCp(ir.text, 0xe235) && ir.text.includes("\\ue235"), JSON.stringify(ir.text));
+  t("无裸字符", ir.action === "transform" && !hasCp(it7, 0xe235) && it7.includes("\\ue235"), JSON.stringify(ir));
 
   console.log("── ⑧ 流级丢失探测");
   notes.length = 0;
@@ -99,9 +102,11 @@ const t = (name, ok, detail = "") => {
   t("丢失被点名", notes.some((n) => n.includes("MISSING")), notes.join("|"));
   notes.length = 0;
   await h["message_start"]?.({}, {});
-  await h["message_update"]({ message: { role: "assistant", content: [{ type: "text", text: "稳定 \\ue235" }] } }, ctx);
-  await h["message_end"]({ message: { role: "assistant", content: [{ type: "text", text: "稳定 \\ue235" }] } }, ctx);
-  t("一致时无误报", !notes.some((n) => n.includes("MISSING")));
+  // 流与最终消息都真含 at-risk 字符（一致）——此前用纯文本，从没测过比较逻辑
+  const stable = "稳定 " + String.fromCodePoint(0xe235) + " 在场";
+  await h["message_update"]({ message: { role: "assistant", content: [{ type: "text", text: stable }] } }, ctx);
+  await h["message_end"]({ message: { role: "assistant", content: [{ type: "text", text: stable }] } }, ctx);
+  t("一致时无误报", !notes.some((n) => n.includes("MISSING")), notes.join("|"));
 
   console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
   process.exit(fail ? 1 : 0);
