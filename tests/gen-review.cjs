@@ -157,6 +157,18 @@ const CASES = [
     expect: "代码里的标记是要复制的字面量，不解析", mut: "M7" },
   { sec: "⑭ [[nf:]] 语义标记(beta)", name: "未知名保留+点名", kind: "nf", in: "[[nf:zzz_no_such]]",
     expect: "标记保留 + warning 点名（不静默）", mut: "M37" },
+  { sec: "⑮ [[nf:]] 健壮性", name: "旧Map遗留安全迁移", kind: "nf", in: "遗留裸Map→[[nf:python]]",
+    expect: "旧结构安全重建，不崩溃，解析为正确码位", mut: "M40" },
+  { sec: "⑮ [[nf:]] 健壮性", name: "签名变化缓存失效", kind: "nf", in: "投毒缓存→改签名→重解析",
+    expect: "cmap 指纹失配 → 缓存整体失效 → 投毒值被纠正", mut: "M41" },
+  { sec: "⑮ [[nf:]] 健壮性", name: "失败缓存不永久", kind: "nf", in: "python→null 后重试",
+    expect: "null 不跨消息缓存，下条消息重试成功", mut: "M42" },
+  { sec: "⑮ [[nf:]] 健壮性", name: "非法标记保留+点名", kind: "nf", in: "[[nf:bad name]] [[nf:名称]]",
+    expect: "语法非法的标记保留原文 + warning 点名（静默=红线违规）", mut: "M43" },
+  { sec: "⑮ [[nf:]] 健壮性", name: "vscode 子串解析", kind: "nf", in: "[[nf:vscode]]",
+    expect: "别名删除后子串命中（别名反伤判例）", mut: "M44" },
+  { sec: "⑮ [[nf:]] 健壮性", name: "node.js 别名可达", kind: "nf", in: "[[nf:node.js]]",
+    expect: "正则允许 . 后别名可达", mut: "M39" },
   { sec: "⑬ Markdown 边角", name: "波浪围栏保护", kind: "end", in: "前 \\ue235\n~~~\nx = \"\\ue0b0\"\n~~~\n后 \\uf308",
     expect: "~~~ 围栏与 ``` 同等保护", mut: "M7" },
   { sec: "⑬ Markdown 边角", name: "带语言标注围栏", kind: "end", in: "```js\nicon = \"\\ue718\"\n```\n外 \\ue0a0",
@@ -198,7 +210,10 @@ const CASES = [
         })();
         actual = notes.length ? `通知: ${notes.map(dec).join(" ｜ ")}` : "(无通知)";
       } else if (c.kind === "nf") {
-        const src = c.in.includes("```") ? "```\n[[nf:python]]\n```" : c.in.replace(/⟦/g, "").replace(/⟧/g, "");
+        let src = c.in;
+        if (c.name === "旧Map遗留安全迁移") { globalThis[Symbol.for("pi.nerdfontUnescape.nfCache")] = new Map([["python", 0xe0a0]]); src = "[[nf:python]]"; }
+        else if (c.name === "非法标记保留+点名") src = "[[nf:bad name]] 与 [[nf:名称]]";
+        else if (c.in.includes("```")) src = "```\n[[nf:python]]\n```";
         notes.length = 0;
         const out = await end(src);
         track(out);

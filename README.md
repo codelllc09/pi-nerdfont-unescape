@@ -49,7 +49,7 @@ warning** (never silent). The test suites require the same. On Windows,
 
 ## Testing & the vision-verify workflow
 
-`tests/test-nerdfont-unescape.cjs` — 20-case regression suite including
+`tests/test-nerdfont-unescape.cjs` + `test-tools.cjs` — full regression suites (count grows with precedents) including
 every historical bug form.
 
 **Rendering correctness is ultimately judged by pixels**: unit tests can
