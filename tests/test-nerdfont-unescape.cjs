@@ -179,10 +179,10 @@ const t = (name, ok, detail = "") => {
 
   // null 不跨消息缓存：失败后重试应成功
   await safeEnd("预热2 [[nf:python]]");
-  store.sig = undefined; void store;
+  // 只投毒 null、不动签名：null 重试是唯一路径（改签名会走失效分支把 null 清掉，
+  // 在带正常签名的环境里曾把变异喂绿——外部评审判例）
   const st2 = globalThis[Symbol.for("pi.nerdfontUnescape.nfCache")];
   st2.map.set("python", null);
-  if (st2.sig === undefined && st2.map.size > 1) st2.sig = st2.sig; // 保持现签名
   a = await safeEnd("重试 [[nf:python]]");
   t("失败缓存不永久", !a.includes("[[nf:python]]") && hasCp(a, 0xe235), JSON.stringify(a));
 
@@ -199,6 +199,32 @@ const t = (name, ok, detail = "") => {
   t("vscode 子串解析", !a.includes("[[nf:vscode]]"), JSON.stringify(a));
   a = await safeEnd("[[nf:node.js]] 运行时");
   t("node.js 别名可达", !a.includes("[[nf:node.js]]"), JSON.stringify(a));
+
+  console.log("── ⑯ reload 与批量（第六轮外部评审）");
+  {
+    const SYM = Symbol.for("pi.nerdfontUnescape.nfCache");
+    const SIG = Symbol.for("pi.nerdfontUnescape.cmapSig");
+    await safeEnd("[[nf:python]]");
+    const st = globalThis[SYM];
+    globalThis[SIG] = st.sig; // 模拟 reload：签名仅存全局
+    st.map.set("python", 0xe0a0); // 投毒
+    let o = await safeEnd("[[nf:python]]");
+    const keep = hasCp(o, 0xe0a0) && !hasCp(o, 0xe235);
+    globalThis[SIG] = "__font_changed__"; // 字体集变更
+    o = await safeEnd("[[nf:python]]");
+    t("reload签名保持+变更恢复", keep && hasCp(o, 0xe235) && !hasCp(o, 0xe0a0), JSON.stringify(o));
+  }
+  notes.length = 0;
+  await safeEnd("[[nf:]] 与 [[nf:" + "a".repeat(41) + "]] 与 [[nf:" + "b".repeat(65) + "]]");
+  const n41 = "a".repeat(41), n65 = "b".repeat(65);
+  const warnMsg = notes.find((n) => n.includes("语法不合法")) ?? "";
+  t("空名与超长名告警", warnMsg.includes("[[nf:]]") && warnMsg.includes(n41) && warnMsg.includes(n65), JSON.stringify(notes));
+  {
+    const st = globalThis[Symbol.for("pi.nerdfontUnescape.nfCache")];
+    st.map.delete("python"); st.map.delete("docker"); // 强制走批量路径
+    a = await safeEnd("[[nf:python]] 和 [[nf:docker]] 双名");
+    t("双未缓存名批量解析", !a.includes("[[nf:python]]") && !a.includes("[[nf:docker]]"), JSON.stringify(a));
+  }
 
   console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
   process.exit(fail ? 1 : 0);

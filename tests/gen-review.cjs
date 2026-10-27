@@ -169,6 +169,12 @@ const CASES = [
     expect: "别名删除后子串命中（别名反伤判例）", mut: "M44" },
   { sec: "⑮ [[nf:]] 健壮性", name: "node.js 别名可达", kind: "nf", in: "[[nf:node.js]]",
     expect: "正则允许 . 后别名可达", mut: "M39" },
+  { sec: "⑯ reload 与批量", name: "reload签名保持+变更恢复", kind: "nf", in: "签名仅存全局（reload 模拟）",
+    expect: "同签名投毒沿用；签名变更后投毒被纠正（cmapSig 全局化）", mut: "M41 M45" },
+  { sec: "⑯ reload 与批量", name: "空名与超长名告警", kind: "nf", in: "[[nf:]] 41字 65字",
+    expect: "空名/超长名都进语法告警（宽松扫描 0-120 + 同规则校验）", mut: "M46 M47" },
+  { sec: "⑯ reload 与批量", name: "双未缓存名批量解析", kind: "nf", in: "[[nf:python]] 和 [[nf:docker]]",
+    expect: "一次批量调用解析全部未缓存名", mut: "M48" },
   { sec: "⑬ Markdown 边角", name: "波浪围栏保护", kind: "end", in: "前 \\ue235\n~~~\nx = \"\\ue0b0\"\n~~~\n后 \\uf308",
     expect: "~~~ 围栏与 ``` 同等保护", mut: "M7" },
   { sec: "⑬ Markdown 边角", name: "带语言标注围栏", kind: "end", in: "```js\nicon = \"\\ue718\"\n```\n外 \\ue0a0",
@@ -213,11 +219,36 @@ const CASES = [
         let src = c.in;
         if (c.name === "旧Map遗留安全迁移") { globalThis[Symbol.for("pi.nerdfontUnescape.nfCache")] = new Map([["python", 0xe0a0]]); src = "[[nf:python]]"; }
         else if (c.name === "非法标记保留+点名") src = "[[nf:bad name]] 与 [[nf:名称]]";
+        else if (c.name === "空名与超长名告警") src = "[[nf:]] 与 [[nf:" + "a".repeat(41) + "]] 与 [[nf:" + "b".repeat(65) + "]]";
+        else if (c.name === "双未缓存名批量解析") {
+          const st = globalThis[Symbol.for("pi.nerdfontUnescape.nfCache")];
+          st.map.delete("python"); st.map.delete("docker");
+          src = "[[nf:python]] 和 [[nf:docker]] 双名";
+        }
+        else if (c.name === "签名变化缓存失效") {
+          await end("[[nf:git-branch]]"); // 预热
+          const st = globalThis[Symbol.for("pi.nerdfontUnescape.nfCache")];
+          st.map.set("git-branch", 0xe235); // 投毒（同签名）
+          const poisoned = await end("[[nf:git-branch]]");
+          globalThis[Symbol.for("pi.nerdfontUnescape.cmapSig")] = "__review_changed__";
+          const cured = await end("[[nf:git-branch]]");
+          src = null;
+          actual = `投毒沿用: ${dec(poisoned)}\n变更后: ${dec(cured)}\n(纠正=${hasCp(cured, 0xe0a0) && !hasCp(cured, 0xe235)})`;
+        }
+        else if (c.name === "失败缓存不永久") {
+          await end("[[nf:python]]");
+          globalThis[Symbol.for("pi.nerdfontUnescape.nfCache")].map.set("python", null);
+          src = null;
+          const retried = await end("[[nf:python]]");
+          actual = `null 后重试: ${dec(retried)}\n(解析=${!retried.includes("[[nf:python]]")})`;
+        }
         else if (c.in.includes("```")) src = "```\n[[nf:python]]\n```";
         notes.length = 0;
-        const out = await end(src);
-        track(out);
-        actual = `原样: ${out}` + `\n解码: ${dec(out)}` + (notes.length ? `\n通知: ${notes.map(dec).join(" ｜ ")}` : "");
+        if (src !== null) {
+          const out = await end(src);
+          track(out);
+          actual = `原样: ${out}` + `\n解码: ${dec(out)}` + (notes.length ? `\n通知: ${notes.map(dec).join(" ｜ ")}` : "");
+        }
       } else if (c.kind === "prompt") {
         const r = await handlers["before_agent_start"]({ systemPrompt: "BASE" }, ctx);
         actual = `前缀: ${JSON.stringify(r.systemPrompt.slice(0, 6))} …协议块摘录: ${esc(r.systemPrompt.slice(r.systemPrompt.indexOf("[nerdfont"), r.systemPrompt.indexOf("[nerdfont") + 60)).replace(/&/g, "&amp;")}…`;
@@ -232,6 +263,8 @@ const CASES = [
         if (c.name.startsWith("CJK")) out = await render({ content: "中文", width: 8 });
         else if (c.name.startsWith("TAB")) out = await render({ content: "左段\t右段", width: 20 });
         else if (c.name === "双边框") out = await render({ content: "标题", frame: "double", width: 10 });
+        else if (c.name === "writePath 护栏") out = await render({ content: "x", writePath: "/etc/pi-render-guard-test.out" });
+        else if (c.name === "六位转义按图标计宽") out = await render({ content: "\\u{100000} 六位", width: 12 });
         else if (c.name === "六位预览转义字面量") out = await render({ content: "\\u{100000} x", width: 10 });
         else if (c.name === "非法码位短错误") out = await render({ content: "\\u{ffffff} z", width: 10 });
         else if (c.name === "符号链接不绕护栏") {

@@ -82,6 +82,7 @@ const CMAP_CACHE =
       ? `${os.homedir()}/Library/Caches/pi-nerdfont-unescape/cmap.json`
       : `${os.homedir()}/.cache/pi-nerdfont-unescape/cmap.json`;
 const CMAP_STORE = Symbol.for("pi.nerdfontUnescape.cmap");
+const CMAP_SIG = Symbol.for("pi.nerdfontUnescape.cmapSig"); // 签名必须全局存活：reload 重置模块变量后仍可比对
 
 type Ranges = Array<[number, number]>;
 
@@ -159,6 +160,7 @@ function loadCmapCache(): boolean {
     if (!Array.isArray(data.ranges)) return false;
     (globalThis as any)[CMAP_STORE] = data.ranges as Ranges;
     cmapSig = typeof data.sig === "string" ? data.sig : undefined;
+    (globalThis as any)[CMAP_SIG] = cmapSig; // 同步全局：NF 解析缓存失效判据
     return true;
   } catch {
     return false;
@@ -185,7 +187,12 @@ function buildCmapCache(notify?: (msg: string, level: string) => void): void {
 
 function ensureCmapCache(notify?: (msg: string, level: string) => void): void {
   const g = globalThis as any;
-  if (g[CMAP_STORE]) return;
+  if (g[CMAP_STORE]) {
+    // reload 场景：cmap 已在全局，但本模块实例的 cmapSig 是新的 undefined——
+    // 必须从全局回填，否则签名比对永远失配/永不再触发（外部评审判例）
+    if (cmapSig === undefined && typeof g[CMAP_SIG] === "string") cmapSig = g[CMAP_SIG];
+    return;
+  }
   if (!loadCmapCache()) {
     buildCmapCache(notify); // 无缓存：首次构建
     return;
@@ -235,15 +242,16 @@ async function resolveNfMarkers(text: string, notify?: (msg: string, level: stri
     g[NF_CACHE] = { sig: undefined as string | undefined, map: new Map<string, number | null>() };
   }
   const store = g[NF_CACHE] as { sig: string | undefined; map: Map<string, number | null> };
-  if (store.sig !== cmapSig) {
+  const curSig = (globalThis as any)[CMAP_SIG] as string | undefined;
+  if (store.sig !== curSig) {
     store.map.clear(); // 字体集指纹变化（增删字体）→ 解析缓存整体失效
     store.sig = cmapSig;
   }
   const cache = store.map;
   const wanted = new Set<string>();
   const invalid = new Set<string>();
-  const LOOSE_NF = /\[\[nf:([^\[\]\n]{1,60})\]\]/gi;
-  const VALID_NAME = /^[a-z0-9_.-]+$/i;
+  const LOOSE_NF = /\[\[nf:([^\[\]\n]{0,120}?)\]\]/gi; // 覆盖空名与超长名（外部评审判例）
+  const VALID_NAME = /^[a-z0-9_.-]{1,40}$/i; // 与 NF_MARKER 完全同规则：字符集+长度上限
   walkUnprotected(text, (seg) => {
     for (const m of seg.matchAll(NF_MARKER)) wanted.add(m[1].toLowerCase());
     for (const m of seg.matchAll(LOOSE_NF)) {
