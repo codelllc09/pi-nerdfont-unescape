@@ -133,19 +133,72 @@ const t = (name, ok, detail = "") => {
   const restoredN = notes.some((n) => n.includes("restored"));
   t("流转义还原不矛盾", restoredN && !missN, JSON.stringify(notes));
 
+  // 变异下解析可能崩溃——本段一律走防御式 end，失败归因到具体用例而非套件崩溃
+  const safeEnd = async (t) => {
+    try {
+      return await end(t);
+    } catch (e) {
+      return "崩溃: " + String(e);
+    }
+  };
   console.log("── ⑭ [[nf:]] 语义标记");
-  a = await end("看 [[nf:python]] 图标");
+  a = await safeEnd("看 [[nf:python]] 图标");
   t("标记解析渲染", !a.includes("[[nf:python]]") && (hasCp(a, 0xe235) || a.includes("□U+E235")), JSON.stringify(a));
   // 2026-10-28 外部评审判例：快速通道曾只认小写 → [[NF:]] 被静默忽略（红线违规）
-  a = await end("大写 [[NF:python]] 标记");
+  a = await safeEnd("大写 [[NF:python]] 标记");
   t("大写标记解析", !a.includes("[[NF:python]]") && (hasCp(a, 0xe235) || a.includes("□U+E235")), JSON.stringify(a));
-  a = await end("分支 [[nf:git-branch]] 图标");
+  a = await safeEnd("分支 [[nf:git-branch]] 图标");
   t("git-branch 别名解析", !a.includes("[[nf:git-branch]]") && (hasCp(a, 0xe0a0) || a.includes("□U+E0A0")), JSON.stringify(a));
-  a = await end("```\n[[nf:python]]\n```");
+  a = await safeEnd("```\n[[nf:python]]\n```");
   t("围栏内标记不动", a.includes("[[nf:python]]"), JSON.stringify(a));
   notes.length = 0;
-  a = await end("未知 [[nf:zzz_no_such]] 名");
+  a = await safeEnd("未知 [[nf:zzz_no_such]] 名");
   t("未知名保留+点名", a.includes("[[nf:zzz_no_such]]") && notes.some((n) => n.includes("zzz_no_such")), JSON.stringify(notes));
+
+  console.log("── ⑮ [[nf:]] 健壮性（缓存与语法）");  // 旧版裸 Map 遗留（reload 同进程）→ 必须安全重建而非崩溃（外部评审判例）
+  globalThis[Symbol.for("pi.nerdfontUnescape.nfCache")] = new Map([["python", 0xe0a0]]);
+  let mig = "(未跑)";
+  try {
+    await h["message_start"]?.({}, {});
+    const r = await h["message_end"]({ message: { role: "assistant", content: [{ type: "text", text: "[[nf:python]]" }] } }, ctx);
+    mig = r?.message?.content?.[0]?.text ?? "";
+  } catch (e) {
+    mig = "崩溃: " + String(e);
+  }
+  t("旧Map遗留安全迁移", !mig.startsWith("崩溃") && hasCp(mig, 0xe235) && !hasCp(mig, 0xe0a0), JSON.stringify(mig));
+
+  // 签名失效：篡改同签名缓存生效 → 改签名后必须重新解析
+  const store = globalThis[Symbol.for("pi.nerdfontUnescape.nfCache")];
+  await safeEnd("预热 [[nf:git-branch]]");
+  store.map.set("git-branch", 0xe235); // 投毒（同签名，应被沿用）
+  let p = await safeEnd("投毒 [[nf:git-branch]]");
+  const poisonHonored = hasCp(p, 0xe235);
+  store.sig = "__bogus__"; // 签名失配 → 整体失效 → 重新解析回真值
+  p = await safeEnd("失效 [[nf:git-branch]]");
+  t("签名变化缓存失效", poisonHonored && hasCp(p, 0xe0a0) && !hasCp(p, 0xe235), JSON.stringify(p));
+
+  // null 不跨消息缓存：失败后重试应成功
+  await safeEnd("预热2 [[nf:python]]");
+  store.sig = undefined; void store;
+  const st2 = globalThis[Symbol.for("pi.nerdfontUnescape.nfCache")];
+  st2.map.set("python", null);
+  if (st2.sig === undefined && st2.map.size > 1) st2.sig = st2.sig; // 保持现签名
+  a = await safeEnd("重试 [[nf:python]]");
+  t("失败缓存不永久", !a.includes("[[nf:python]]") && hasCp(a, 0xe235), JSON.stringify(a));
+
+  // 非法语法标记：保留原文 + 可见告警（静默=红线违规）
+  notes.length = 0;
+  const inv = "[[nf:bad name]] 与 [[nf:名称]]";
+  await h["message_start"]?.({}, {});
+  const rInv = await h["message_end"]({ message: { role: "assistant", content: [{ type: "text", text: inv }] } }, ctx);
+  const invOut = rInv?.message?.content?.[0]?.text ?? inv;
+  t("非法标记保留+点名", invOut === inv && notes.some((n) => n.includes("语法不合法") && n.includes("bad name")), JSON.stringify(notes));
+
+  // vscode 走子串（别名反伤判例）
+  a = await safeEnd("[[nf:vscode]] 编辑器");
+  t("vscode 子串解析", !a.includes("[[nf:vscode]]"), JSON.stringify(a));
+  a = await safeEnd("[[nf:node.js]] 运行时");
+  t("node.js 别名可达", !a.includes("[[nf:node.js]]"), JSON.stringify(a));
 
   console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
   process.exit(fail ? 1 : 0);

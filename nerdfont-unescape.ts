@@ -201,7 +201,7 @@ function ensureCmapCache(notify?: (msg: string, level: string) => void): void {
 // [[nf:name]] 语义协议（v0.2）：模型写图标语义名，扩展按本机字体解析成
 // \uXXXX 转义，再交给既有还原管线——保护/可见性/通知全部复用。
 // 围栏与行内代码段内的标记不动（代码是拿来复制的）。
-const NF_MARKER = /\[\[nf:([a-z0-9_-]{1,40})\]\]/gi;
+const NF_MARKER = /\[\[nf:([a-z0-9_.-]{1,40})\]\]/gi;
 const NF_CACHE = Symbol.for("pi.nerdfontUnescape.nfCache");
 
 function walkUnprotected(text: string, fn: (seg: string) => string): string {
@@ -229,7 +229,11 @@ function walkUnprotected(text: string, fn: (seg: string) => string): string {
 async function resolveNfMarkers(text: string, notify?: (msg: string, level: string) => void): Promise<string> {
   if (!/\[\[nf:/i.test(text)) return text; // 快速通道必须与 NF_MARKER 同为大小写不敏感（静默忽略=红线违规）
   const g = globalThis as any;
-  if (!g[NF_CACHE]) g[NF_CACHE] = { sig: undefined as string | undefined, map: new Map<string, number | null>() };
+  // 结构校验而非存在性检查：旧版遗留的是裸 Map（reload 同进程存活），
+  // 缺 sig/map 字段 → 安全重建，绝不带着坏结构往下走（外部评审判例：曾直接崩溃）
+  if (!(g[NF_CACHE] && typeof g[NF_CACHE] === "object" && g[NF_CACHE].map instanceof Map)) {
+    g[NF_CACHE] = { sig: undefined as string | undefined, map: new Map<string, number | null>() };
+  }
   const store = g[NF_CACHE] as { sig: string | undefined; map: Map<string, number | null> };
   if (store.sig !== cmapSig) {
     store.map.clear(); // 字体集指纹变化（增删字体）→ 解析缓存整体失效
@@ -237,10 +241,19 @@ async function resolveNfMarkers(text: string, notify?: (msg: string, level: stri
   }
   const cache = store.map;
   const wanted = new Set<string>();
+  const invalid = new Set<string>();
+  const LOOSE_NF = /\[\[nf:([^\[\]\n]{1,60})\]\]/gi;
+  const VALID_NAME = /^[a-z0-9_.-]+$/i;
   walkUnprotected(text, (seg) => {
     for (const m of seg.matchAll(NF_MARKER)) wanted.add(m[1].toLowerCase());
+    for (const m of seg.matchAll(LOOSE_NF)) {
+      if (!VALID_NAME.test(m[1])) invalid.add(m[1]); // 形如 [[nf:...]] 但名字非法 → 必须点名
+    }
     return seg;
   });
+  if (invalid.size > 0) {
+    notify?.(`nerdfont-unescape: 标记语法不合法（名字只允许字母/数字/._-），原样保留：[[nf:${[...invalid].join("]]、[[nf:")}]]`, "warning");
+  }
   if (wanted.size === 0) return text;
   // 失败(null)不跨消息缓存——装新字体/临时故障后下一条消息自动重试；
   // 所有待查名合并为一次批量 python 调用（逐名调用曾使延迟线性增长）
@@ -717,7 +730,7 @@ if q.startswith("resolve:"):
                 return i
         return len(PRI)
     # 稳定语义别名：模型/人类的常见叫法 → 字体内部命名（解析顺序：别名 → 精确名 → 子串）
-    ALIAS = {"git-branch": "branch", "node-js": "nodejs", "node.js": "nodejs", "macos": "apple", "vscode": "visual-studio-code"}
+    ALIAS = {"git-branch": "branch", "node-js": "nodejs", "node.js": "nodejs", "macos": "apple"}
     for name in q[8:].split(","):
         name = name.strip().lower()
         if not name:

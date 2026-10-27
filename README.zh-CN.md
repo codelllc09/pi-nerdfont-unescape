@@ -43,7 +43,7 @@ pi install npm:pi-nerdfont-unescape
 
 ## 测试与视觉验证工作流
 
-`tests/test-nerdfont-unescape.cjs` —— 与 test-tools.cjs 合计 62 项回归，含全部历史翻车形态。
+`tests/test-nerdfont-unescape.cjs` —— 与 test-tools.cjs 构成全量回归（数量随判例增长），含全部历史翻车形态。
 
 **渲染正确性的最终裁决权在像素**：单测会假绿（套件头注释记录了两种
 成因）。重要改动后：真实输出一条含目标形态的消息 → 截图 → 让视觉
