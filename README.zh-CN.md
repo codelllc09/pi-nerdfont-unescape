@@ -24,7 +24,7 @@ LLM 的 tokenizer 不认识私有区码位（Nerd Font 图标全在此区）。�
 | 输入自动转义 | **你发出的消息**里的 at-risk 字符自动转义（输入方向同样被剥）——模型真正收到你贴的内容 |
 | 流级丢失探测 | `message_update` 期间出现过、最终消息里消失的码位，点名报告 |
 | 字体 ground truth | 全部已装字体 cmap 并集缓存 + 签名失效；Linux / macOS / Windows 路径 |
-| `[[nf:名称]]` 语义标记 | 写 `[[nf:python]]`，扩展按**本机字体**在渲染时解析成图标；未知名可见警告；代码段内保持字面 |
+| `[[nf:名称]]` 语义标记（beta） | 写 `[[nf:python]]`，扩展按**本机字体**在渲染时解析成图标；未知名可见警告；代码段内保持字面 |
 | `nerdfont_lookup` 工具 | 按关键词/码位查本机 Nerd Font 字形，族别优先，内置 starship 默认表 |
 | `render_preview` 工具 | 等宽网格排版渲染（CJK=2 列、PUA=1 列、点线、边框） |
 
@@ -43,7 +43,7 @@ pi install npm:pi-nerdfont-unescape
 
 ## 测试与视觉验证工作流
 
-`tests/test-nerdfont-unescape.cjs` —— 与 test-tools.cjs 合计 56 项回归，含全部历史翻车形态。
+`tests/test-nerdfont-unescape.cjs` —— 与 test-tools.cjs 合计 62 项回归，含全部历史翻车形态。
 
 **渲染正确性的最终裁决权在像素**：单测会假绿（套件头注释记录了两种
 成因）。重要改动后：真实输出一条含目标形态的消息 → 截图 → 让视觉
@@ -56,6 +56,12 @@ pi install npm:pi-nerdfont-unescape
 `PI_VISION_MODEL` / `PI_VISION_BASE_URL` / `PI_VISION_API_KEY` 环境变量 →
 `~/.config/pi-nerdfont-unescape/vision.json` → 兜底默认（`glm-5.3-flash`，
 pi 自带凭证）。任何 OpenAI 兼容端点均可，fork 请用前两级设置自己的模型。
+
+## 边界说明：存档不是 ASCII
+
+`[[nf:]]` 在 `message_end` 解析——这是 pi 扩展唯一的拦截点，而它同时供给
+**显示与存储**。因此会话存档里保存的是还原后的真字符。「存档恒 ASCII、
+仅在绘制边界转字形」需要 pi 核心支持，当前扩展 API 没有这个钩子。
 
 ## 设计史（浓缩）
 

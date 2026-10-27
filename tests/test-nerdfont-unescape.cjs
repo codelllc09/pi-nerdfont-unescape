@@ -136,6 +136,11 @@ const t = (name, ok, detail = "") => {
   console.log("── ⑭ [[nf:]] 语义标记");
   a = await end("看 [[nf:python]] 图标");
   t("标记解析渲染", !a.includes("[[nf:python]]") && (hasCp(a, 0xe235) || a.includes("□U+E235")), JSON.stringify(a));
+  // 2026-10-28 外部评审判例：快速通道曾只认小写 → [[NF:]] 被静默忽略（红线违规）
+  a = await end("大写 [[NF:python]] 标记");
+  t("大写标记解析", !a.includes("[[NF:python]]") && (hasCp(a, 0xe235) || a.includes("□U+E235")), JSON.stringify(a));
+  a = await end("分支 [[nf:git-branch]] 图标");
+  t("git-branch 别名解析", !a.includes("[[nf:git-branch]]") && (hasCp(a, 0xe0a0) || a.includes("□U+E0A0")), JSON.stringify(a));
   a = await end("```\n[[nf:python]]\n```");
   t("围栏内标记不动", a.includes("[[nf:python]]"), JSON.stringify(a));
   notes.length = 0;

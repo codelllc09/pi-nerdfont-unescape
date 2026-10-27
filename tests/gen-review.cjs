@@ -49,6 +49,8 @@ const CASES = [
     expect: "文本含 U+E235 真字符（还原为图标）", mut: "M1" },
   { sec: "① 转义还原", name: "括号形式还原", kind: "end", in: "图标 \\ue235 与 \\u{f0805} Azure",
     expect: "文本含 U+F0805 真字符（增补区括号形式还原）", mut: "M1 M2" },
+  { sec: "① 转义还原", name: "六位码位(PUA-B)可见标记", kind: "end", in: "\\u{100000} 与 \\u{10fffd}",
+    expect: "PUA-B 六位转义 → □U+100000 / □U+10FFFD（本机无字形，可见替换）", mut: "M2 M4 M24" },
   { sec: "② 字面逃生舱", name: "双反斜杠保持字面", kind: "end", in: "字面写法 \\\\ue235 不还原",
     expect: "显示为单反斜杠字面 \\ue235，不出现真字符", mut: "M3" },
   { sec: "② 字面逃生舱", name: "六位逃生舱保持字面", kind: "end", in: "字面 \\\\u{100000} 保持",
@@ -101,8 +103,8 @@ const CASES = [
     expect: "nerdfont_lookup 与 render_preview 均注册", mut: "M19" },
   { sec: "⑨ nerdfont_lookup", name: "关键词 python → 含 E235 转义", kind: "lookup", in: "python",
     expect: "返回行含 \\uE235（可直接粘贴的转义）", mut: "M14 M15" },
-  { sec: "⑨ nerdfont_lookup", name: "族别优先（字形行带族前缀）", kind: "lookup", in: "python",
-    expect: "结果行带族前缀（nf-custom- / md- 等，常规字形靠前）", mut: "M14 M15" },
+  { sec: "⑨ nerdfont_lookup", name: "族别优先（首行即优先族）", kind: "lookup", in: "python",
+    expect: "首个字形行即来自优先族（真正断言排序）", mut: "M14 M15" },
   { sec: "⑨ nerdfont_lookup", name: "码位查询 → E0A0 在场", kind: "lookup", in: "U+E0A0",
     expect: "码位反查返回 pl-branch / e0a0", mut: "M14 M15" },
   { sec: "⑨ nerdfont_lookup", name: "starship 模式 → E718", kind: "lookup", in: "starship nodejs",
@@ -125,6 +127,10 @@ const CASES = [
     expect: "[U+FFFFFF] 可见标记 + 短错误", mut: "M33" },
   { sec: "⑩ render_preview", name: "符号链接不绕护栏", kind: "render", in: "writePath=/tmp/link→/dev/null",
     expect: "真路径判定：链接先解析再查界", mut: "M28 M35" },
+  { sec: "⑩ render_preview", name: "writePath 护栏", kind: "render", in: "writePath=/etc/x.out",
+    expect: "界外路径拒绝 + PI_RENDER_ALLOW_ANY 提示", mut: "M28" },
+  { sec: "⑩ render_preview", name: "六位转义按图标计宽", kind: "render", in: "\\u{100000} / width=12",
+    expect: "六位转义按 1 列图标计宽（pua=1）", mut: "M29" },
   { sec: "⑩ render_preview", name: "写盘回报", kind: "render", in: "同上",
     expect: "输出回报写入路径", mut: "M21" },
   { sec: "⑪ 系统提示注入", name: "追加而非替换", kind: "prompt", in: 'BASE',
@@ -141,6 +147,16 @@ const CASES = [
     expect: "六位码位输入侧生成 \\u{10fffd}", mut: "M9" },
   { sec: "⑫ 输入处理边角", name: "通知级别 warning", kind: "input", in: "a⟦F0805⟧⟦E235⟧",
     expect: "自动转义时通知级别为 warning", mut: "M23" },
+  { sec: "⑭ [[nf:]] 语义标记(beta)", name: "标记解析渲染", kind: "nf", in: "[[nf:python]]",
+    expect: "解析为本机字体图标（真字符或可见标记），标记不残留", mut: "M36" },
+  { sec: "⑭ [[nf:]] 语义标记(beta)", name: "大写标记解析", kind: "nf", in: "[[NF:python]]",
+    expect: "大小写不敏感（快速通道与正则一致，静默忽略=红线违规）", mut: "M38" },
+  { sec: "⑭ [[nf:]] 语义标记(beta)", name: "git-branch 别名解析", kind: "nf", in: "[[nf:git-branch]]",
+    expect: "稳定别名 → branch → E0A0（别名→精确名→子串 三级解析）", mut: "M39" },
+  { sec: "⑭ [[nf:]] 语义标记(beta)", name: "围栏内标记不动", kind: "nf", in: "```[[nf:python]]```",
+    expect: "代码里的标记是要复制的字面量，不解析", mut: "M7" },
+  { sec: "⑭ [[nf:]] 语义标记(beta)", name: "未知名保留+点名", kind: "nf", in: "[[nf:zzz_no_such]]",
+    expect: "标记保留 + warning 点名（不静默）", mut: "M37" },
   { sec: "⑬ Markdown 边角", name: "波浪围栏保护", kind: "end", in: "前 \\ue235\n~~~\nx = \"\\ue0b0\"\n~~~\n后 \\uf308",
     expect: "~~~ 围栏与 ``` 同等保护", mut: "M7" },
   { sec: "⑬ Markdown 边角", name: "带语言标注围栏", kind: "end", in: "```js\nicon = \"\\ue718\"\n```\n外 \\ue0a0",
@@ -181,6 +197,12 @@ const CASES = [
           await handlers["message_end"]({ message: { role: "assistant", content: [{ type: "text", text: "回" }] } }, ctx);
         })();
         actual = notes.length ? `通知: ${notes.map(dec).join(" ｜ ")}` : "(无通知)";
+      } else if (c.kind === "nf") {
+        const src = c.in.includes("```") ? "```\n[[nf:python]]\n```" : c.in.replace(/⟦/g, "").replace(/⟧/g, "");
+        notes.length = 0;
+        const out = await end(src);
+        track(out);
+        actual = `原样: ${out}` + `\n解码: ${dec(out)}` + (notes.length ? `\n通知: ${notes.map(dec).join(" ｜ ")}` : "");
       } else if (c.kind === "prompt") {
         const r = await handlers["before_agent_start"]({ systemPrompt: "BASE" }, ctx);
         actual = `前缀: ${JSON.stringify(r.systemPrompt.slice(0, 6))} …协议块摘录: ${esc(r.systemPrompt.slice(r.systemPrompt.indexOf("[nerdfont"), r.systemPrompt.indexOf("[nerdfont") + 60)).replace(/&/g, "&amp;")}…`;

@@ -227,26 +227,37 @@ function walkUnprotected(text: string, fn: (seg: string) => string): string {
 }
 
 async function resolveNfMarkers(text: string, notify?: (msg: string, level: string) => void): Promise<string> {
-  if (!text.includes("[[nf:")) return text;
+  if (!/\[\[nf:/i.test(text)) return text; // 快速通道必须与 NF_MARKER 同为大小写不敏感（静默忽略=红线违规）
   const g = globalThis as any;
-  if (!g[NF_CACHE]) g[NF_CACHE] = new Map<string, number | null>();
-  const cache: Map<string, number | null> = g[NF_CACHE];
+  if (!g[NF_CACHE]) g[NF_CACHE] = { sig: undefined as string | undefined, map: new Map<string, number | null>() };
+  const store = g[NF_CACHE] as { sig: string | undefined; map: Map<string, number | null> };
+  if (store.sig !== cmapSig) {
+    store.map.clear(); // 字体集指纹变化（增删字体）→ 解析缓存整体失效
+    store.sig = cmapSig;
+  }
+  const cache = store.map;
   const wanted = new Set<string>();
   walkUnprotected(text, (seg) => {
     for (const m of seg.matchAll(NF_MARKER)) wanted.add(m[1].toLowerCase());
     return seg;
   });
   if (wanted.size === 0) return text;
-  const unresolved: string[] = [];
-  for (const name of wanted) {
-    if (cache.has(name)) continue;
+  // 失败(null)不跨消息缓存——装新字体/临时故障后下一条消息自动重试；
+  // 所有待查名合并为一次批量 python 调用（逐名调用曾使延迟线性增长）
+  const uncached = [...wanted].filter((n) => cache.get(n) == null);
+  if (uncached.length > 0) {
     const out = await new Promise<string>((resolve) => {
-      execFile("python3", ["-c", NF_LOOKUP_PY, `resolve:${name}`, "1"], { timeout: 20000, maxBuffer: 1 << 20 },
+      execFile("python3", ["-c", NF_LOOKUP_PY, `resolve:${uncached.join(",")}`, "1"], { timeout: 20000, maxBuffer: 1 << 20 },
         (err, stdout) => resolve(err ? "" : String(stdout).trim()));
     });
-    const m = out.match(/^[a-z0-9_-]+ ([0-9a-f]+|\?)$/i);
-    cache.set(name, m && m[1] !== "?" ? parseInt(m[1], 16) : null);
+    for (const line of out.split("\n")) {
+      const m = line.match(/^([a-z0-9_.-]+) ([0-9a-f]+|\?)$/i);
+      if (!m) continue;
+      cache.set(m[1].toLowerCase(), m[2] === "?" ? null : parseInt(m[2], 16));
+    }
+    for (const n of uncached) if (!cache.has(n)) cache.set(n, null);
   }
+  const unresolved: string[] = [];
   let outText = walkUnprotected(text, (seg) =>
     seg.replace(NF_MARKER, (whole, name: string) => {
       const k = name.toLowerCase();
@@ -705,11 +716,16 @@ if q.startswith("resolve:"):
             if p + "-" in l:
                 return i
         return len(PRI)
+    # 稳定语义别名：模型/人类的常见叫法 → 字体内部命名（解析顺序：别名 → 精确名 → 子串）
+    ALIAS = {"git-branch": "branch", "node-js": "nodejs", "node.js": "nodejs", "macos": "apple", "vscode": "visual-studio-code"}
     for name in q[8:].split(","):
         name = name.strip().lower()
         if not name:
             continue
-        cands = [(famrank(nm), cp) for cp, nm in names.items() if name in nm.lower()]
+        target = ALIAS.get(name, name)
+        cands = [(famrank(nm), cp) for cp, nm in names.items() if nm.lower() == target]
+        if not cands:
+            cands = [(famrank(nm), cp) for cp, nm in names.items() if target in nm.lower()]
         if cands:
             print("%s %x" % (name, min(cands)[1]))
         else:

@@ -28,7 +28,7 @@ both directions:
 | Input auto-escaping | at-risk chars in **your outgoing messages** are auto-escaped (the channel strips them on input too) — the model actually receives what you pasted |
 | Stream drop detection | at-risk codepoints seen in `message_update` but missing from the final message are reported with codepoints |
 | Font ground truth | union of all installed fonts' cmaps, cached with signature-based invalidation; Linux / macOS / Windows paths |
-| `[[nf:name]]` semantic markers | write `[[nf:python]]`, the extension resolves it against **your local fonts** at render time and warns visibly on unknown names; markers inside code spans stay literal |
+| `[[nf:name]]` semantic markers (beta) | write `[[nf:python]]`, the extension resolves it against **your local fonts** at render time and warns visibly on unknown names; markers inside code spans stay literal |
 | `nerdfont_lookup` tool | query installed Nerd Font glyphs by keyword or codepoint; family-prioritized; includes baked starship defaults |
 | `render_preview` tool | monospace-grid layout renderer with exact terminal width arithmetic (CJK=2, PUA=1), dot leaders, frames |
 
@@ -68,6 +68,14 @@ hardcoded** — resolve order: `PI_VISION_MODEL` / `PI_VISION_BASE_URL` /
 `~/.config/pi-nerdfont-unescape/vision.json` → fallback default
 (`glm-5.3-flash` via Pi's credentials). Any OpenAI-compatible endpoint
 works; forks should set level ① or ②.
+
+## Boundary note: transcript is not ASCII
+
+`[[nf:]]` markers are resolved at `message_end` — the only interception
+point pi extensions have — which feeds **both display and storage**. The
+transcript therefore stores the restored characters. A render-boundary-only
+substitution (ASCII transcript + glyph at paint time) would require core
+support pi does not expose today.
 
 ## Design history (condensed)
 
