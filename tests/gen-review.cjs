@@ -226,14 +226,31 @@ const CASES = [
           src = "[[nf:python]] 和 [[nf:docker]] 双名";
         }
         else if (c.name === "签名变化缓存失效") {
+          const SIGK = Symbol.for("pi.nerdfontUnescape.cmapSig");
+          const savedSig = globalThis[SIGK];
           await end("[[nf:git-branch]]"); // 预热
           const st = globalThis[Symbol.for("pi.nerdfontUnescape.nfCache")];
           st.map.set("git-branch", 0xe235); // 投毒（同签名）
           const poisoned = await end("[[nf:git-branch]]");
-          globalThis[Symbol.for("pi.nerdfontUnescape.cmapSig")] = "__review_changed__";
+          globalThis[SIGK] = "__review_changed__";
           const cured = await end("[[nf:git-branch]]");
+          globalThis[SIGK] = savedSig; // 场景隔离：恢复全局签名，不污染后续场景
           src = null;
           actual = `投毒沿用: ${dec(poisoned)}\n变更后: ${dec(cured)}\n(纠正=${hasCp(cured, 0xe0a0) && !hasCp(cured, 0xe235)})`;
+        }
+        else if (c.name === "reload签名保持+变更恢复") {
+          const SIGK = Symbol.for("pi.nerdfontUnescape.cmapSig");
+          const savedSig = globalThis[SIGK];
+          await end("[[nf:python]]");
+          const st = globalThis[Symbol.for("pi.nerdfontUnescape.nfCache")];
+          globalThis[SIGK] = st.sig; // reload 模拟：签名仅存全局
+          st.map.set("python", 0xe0a0); // 投毒
+          const keep = await end("[[nf:python]]");
+          globalThis[SIGK] = "__reload_changed__";
+          const cured = await end("[[nf:python]]");
+          globalThis[SIGK] = savedSig; // 恢复现场
+          src = null;
+          actual = `同签名投毒: ${dec(keep)}\n变更后: ${dec(cured)}\n(保持=${hasCp(keep, 0xe0a0)}, 纠正=${hasCp(cured, 0xe235)})`;
         }
         else if (c.name === "失败缓存不永久") {
           await end("[[nf:python]]");

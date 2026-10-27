@@ -191,6 +191,11 @@ function ensureCmapCache(notify?: (msg: string, level: string) => void): void {
     // reload 场景：cmap 已在全局，但本模块实例的 cmapSig 是新的 undefined——
     // 必须从全局回填，否则签名比对永远失配/永不再触发（外部评审判例）
     if (cmapSig === undefined && typeof g[CMAP_SIG] === "string") cmapSig = g[CMAP_SIG];
+    // 热升级场景：第五轮版本只留 CMAP_STORE、没有 CMAP_SIG——
+    // 从磁盘缓存恢复签名（loadCmapCache 会同步写全局）；文件也丢则后台重建
+    if (typeof g[CMAP_SIG] !== "string") {
+      if (!loadCmapCache()) buildCmapCache(notify);
+    }
     return;
   }
   if (!loadCmapCache()) {
@@ -245,12 +250,12 @@ async function resolveNfMarkers(text: string, notify?: (msg: string, level: stri
   const curSig = (globalThis as any)[CMAP_SIG] as string | undefined;
   if (store.sig !== curSig) {
     store.map.clear(); // 字体集指纹变化（增删字体）→ 解析缓存整体失效
-    store.sig = cmapSig;
+    store.sig = curSig; // 写回比对基准（曾误写模块局部 cmapSig → 每条消息重复清缓存）
   }
   const cache = store.map;
   const wanted = new Set<string>();
   const invalid = new Set<string>();
-  const LOOSE_NF = /\[\[nf:([^\[\]\n]{0,120}?)\]\]/gi; // 覆盖空名与超长名（外部评审判例）
+  const LOOSE_NF = /\[\[nf:([^\[\]\n]*)\]\]/gi; // 匹配完整外壳、名字不限长——超长名同样必须点名（外部评审判例）
   const VALID_NAME = /^[a-z0-9_.-]{1,40}$/i; // 与 NF_MARKER 完全同规则：字符集+长度上限
   walkUnprotected(text, (seg) => {
     for (const m of seg.matchAll(NF_MARKER)) wanted.add(m[1].toLowerCase());

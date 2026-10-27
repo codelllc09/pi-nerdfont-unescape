@@ -195,10 +195,11 @@ const t = (name, ok, detail = "") => {
   t("非法标记保留+点名", invOut === inv && notes.some((n) => n.includes("语法不合法") && n.includes("bad name")), JSON.stringify(notes));
 
   // vscode 走子串（别名反伤判例）
+  const resolved = (x, cp) => !x.startsWith("崩溃:") && !x.includes("[[nf:") && (hasCp(x, cp) || x.includes(`□U+${cp.toString(16).toUpperCase()}`));
   a = await safeEnd("[[nf:vscode]] 编辑器");
-  t("vscode 子串解析", !a.includes("[[nf:vscode]]"), JSON.stringify(a));
+  t("vscode 子串解析", resolved(a, 0xe8da), JSON.stringify(a));
   a = await safeEnd("[[nf:node.js]] 运行时");
-  t("node.js 别名可达", !a.includes("[[nf:node.js]]"), JSON.stringify(a));
+  t("node.js 别名可达", resolved(a, 0xf0399), JSON.stringify(a));
 
   console.log("── ⑯ reload 与批量（第六轮外部评审）");
   {
@@ -223,7 +224,33 @@ const t = (name, ok, detail = "") => {
     const st = globalThis[Symbol.for("pi.nerdfontUnescape.nfCache")];
     st.map.delete("python"); st.map.delete("docker"); // 强制走批量路径
     a = await safeEnd("[[nf:python]] 和 [[nf:docker]] 双名");
-    t("双未缓存名批量解析", !a.includes("[[nf:python]]") && !a.includes("[[nf:docker]]"), JSON.stringify(a));
+    t("双未缓存名批量解析", !a.startsWith("崩溃:") && (hasCp(a, 0xe235) || a.includes("□U+E235")) && (hasCp(a, 0xf308) || a.includes("□U+F308")), JSON.stringify(a));
+  }
+
+  console.log("── ⑰ 热升级与断言收紧（第七轮外部评审）");
+  {
+    const SYM2 = Symbol.for("pi.nerdfontUnescape.nfCache");
+    const SIG2 = Symbol.for("pi.nerdfontUnescape.cmapSig");
+    await safeEnd("[[nf:python]]");
+    const realSig = globalThis[SIG2];
+    delete globalThis[SIG2]; // 模拟第五轮版本：有 STORE 无 SIG
+    globalThis[SYM2] = { sig: "round5-sig", map: new Map([["python", null]]) };
+    await h["session_start"]?.({}, ctx); // 热升级路径：应从磁盘恢复签名
+    const recovered = typeof globalThis[SIG2] === "string";
+    a = await safeEnd("[[nf:python]]");
+    t("热升级签名迁移", recovered && !a.includes("[[nf:python]]") && !a.startsWith("崩溃:"), `recovered=${recovered}`);
+    globalThis[SIG2] = "brand-new";
+    await safeEnd("[[nf:python]]");
+    const sigAfterFix = globalThis[SYM2].sig;
+    await safeEnd("[[nf:python]]");
+    t("纠正后签名稳定", sigAfterFix === "brand-new" && globalThis[SYM2].sig === "brand-new", `${sigAfterFix}→${globalThis[SYM2].sig}`);
+    globalThis[SIG2] = realSig; // 恢复现场
+  }
+  notes.length = 0;
+  await safeEnd("[[nf:" + "c".repeat(121) + "]] 与 [[nf:" + "d".repeat(200) + "]]");
+  {
+    const warn2 = notes.find((n) => n.includes("语法不合法")) ?? "";
+    t("121/200字名告警", warn2.includes("c".repeat(121)) && warn2.includes("d".repeat(200)), JSON.stringify(notes).slice(0, 80));
   }
 
   console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
