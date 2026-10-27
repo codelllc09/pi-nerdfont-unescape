@@ -28,6 +28,7 @@ both directions:
 | Input auto-escaping | at-risk chars in **your outgoing messages** are auto-escaped (the channel strips them on input too) — the model actually receives what you pasted |
 | Stream drop detection | at-risk codepoints seen in `message_update` but missing from the final message are reported with codepoints |
 | Font ground truth | union of all installed fonts' cmaps, cached with signature-based invalidation; Linux / macOS / Windows paths |
+| `[[nf:name]]` semantic markers | write `[[nf:python]]`, the extension resolves it against **your local fonts** at render time and warns visibly on unknown names; markers inside code spans stay literal |
 | `nerdfont_lookup` tool | query installed Nerd Font glyphs by keyword or codepoint; family-prioritized; includes baked starship defaults |
 | `render_preview` tool | monospace-grid layout renderer with exact terminal width arithmetic (CJK=2, PUA=1), dot leaders, frames |
 

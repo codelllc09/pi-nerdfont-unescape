@@ -24,6 +24,7 @@ LLM 的 tokenizer 不认识私有区码位（Nerd Font 图标全在此区）。�
 | 输入自动转义 | **你发出的消息**里的 at-risk 字符自动转义（输入方向同样被剥）——模型真正收到你贴的内容 |
 | 流级丢失探测 | `message_update` 期间出现过、最终消息里消失的码位，点名报告 |
 | 字体 ground truth | 全部已装字体 cmap 并集缓存 + 签名失效；Linux / macOS / Windows 路径 |
+| `[[nf:名称]]` 语义标记 | 写 `[[nf:python]]`，扩展按**本机字体**在渲染时解析成图标；未知名可见警告；代码段内保持字面 |
 | `nerdfont_lookup` 工具 | 按关键词/码位查本机 Nerd Font 字形，族别优先，内置 starship 默认表 |
 | `render_preview` 工具 | 等宽网格排版渲染（CJK=2 列、PUA=1 列、点线、边框） |
 

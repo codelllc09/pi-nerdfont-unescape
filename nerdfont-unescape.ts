@@ -198,6 +198,72 @@ function ensureCmapCache(notify?: (msg: string, level: string) => void): void {
     });
 }
 
+// [[nf:name]] 语义协议（v0.2）：模型写图标语义名，扩展按本机字体解析成
+// \uXXXX 转义，再交给既有还原管线——保护/可见性/通知全部复用。
+// 围栏与行内代码段内的标记不动（代码是拿来复制的）。
+const NF_MARKER = /\[\[nf:([a-z0-9_-]{1,40})\]\]/gi;
+const NF_CACHE = Symbol.for("pi.nerdfontUnescape.nfCache");
+
+function walkUnprotected(text: string, fn: (seg: string) => string): string {
+  const FENCE = /^[ \t]*(`{3,}|~{3,})/;
+  let fenceOpen: { ch: string; len: number } | null = null;
+  return text
+    .split("\n")
+    .map((line) => {
+      const fm = line.match(FENCE);
+      if (fm) {
+        const run = fm[1];
+        const rest = line.slice((fm.index ?? 0) + fm[0].length);
+        if (!fenceOpen) fenceOpen = { ch: run[0], len: run.length };
+        else if (run[0] === fenceOpen.ch && run.length >= fenceOpen.len && /^[ \t]*$/.test(rest)) fenceOpen = null;
+        return line;
+      }
+      if (fenceOpen) return line;
+      return splitByInlineSpans(line)
+        .map((seg) => (seg.protected ? seg.text : fn(seg.text)))
+        .join("");
+    })
+    .join("\n");
+}
+
+async function resolveNfMarkers(text: string, notify?: (msg: string, level: string) => void): Promise<string> {
+  if (!text.includes("[[nf:")) return text;
+  const g = globalThis as any;
+  if (!g[NF_CACHE]) g[NF_CACHE] = new Map<string, number | null>();
+  const cache: Map<string, number | null> = g[NF_CACHE];
+  const wanted = new Set<string>();
+  walkUnprotected(text, (seg) => {
+    for (const m of seg.matchAll(NF_MARKER)) wanted.add(m[1].toLowerCase());
+    return seg;
+  });
+  if (wanted.size === 0) return text;
+  const unresolved: string[] = [];
+  for (const name of wanted) {
+    if (cache.has(name)) continue;
+    const out = await new Promise<string>((resolve) => {
+      execFile("python3", ["-c", NF_LOOKUP_PY, `resolve:${name}`, "1"], { timeout: 20000, maxBuffer: 1 << 20 },
+        (err, stdout) => resolve(err ? "" : String(stdout).trim()));
+    });
+    const m = out.match(/^[a-z0-9_-]+ ([0-9a-f]+|\?)$/i);
+    cache.set(name, m && m[1] !== "?" ? parseInt(m[1], 16) : null);
+  }
+  let outText = walkUnprotected(text, (seg) =>
+    seg.replace(NF_MARKER, (whole, name: string) => {
+      const k = name.toLowerCase();
+      const cp = cache.get(k) ?? null;
+      if (cp === null || cp === undefined) {
+        if (!unresolved.includes(k)) unresolved.push(k);
+        return whole; // 未解析：标记保留 + 警告点名，不静默
+      }
+      return cp <= 0xffff ? `\\u${cp.toString(16).padStart(4, "0")}` : `\\u{${cp.toString(16)}}`;
+    }),
+  );
+  if (unresolved.length > 0) {
+    notify?.(`nerdfont-unescape: [[nf:${unresolved.join("]]、[[nf:")}]] 本机字体无此名称——标记原样保留（用 nerdfont_lookup 查可用名称）`, "warning");
+  }
+  return outText;
+}
+
 function unescapeAtRisk(text: string): {
   text: string;
   restored: number;
@@ -630,6 +696,25 @@ if not fonts:
 if not names:
     print("fontTools not installed (pip3 install fonttools)")
     sys.exit(0)
+# resolve 模式：[[nf:name]] 语义协议的解析端。逗号分隔多个名，逐名输出 hex 或 ?
+if q.startswith("resolve:"):
+    PRI = ("pl", "linux", "fae", "fa", "oct", "md", "seti", "dev", "cod", "custom", "ie", "weather")
+    def famrank(nm):
+        l = nm.lower()
+        for i, p in enumerate(PRI):
+            if p + "-" in l:
+                return i
+        return len(PRI)
+    for name in q[8:].split(","):
+        name = name.strip().lower()
+        if not name:
+            continue
+        cands = [(famrank(nm), cp) for cp, nm in names.items() if name in nm.lower()]
+        if cands:
+            print("%s %x" % (name, min(cands)[1]))
+        else:
+            print("%s ?" % name)
+    sys.exit(0)
 direct = None
 if q.startswith("u+") and len(q) in (6, 7, 8) and all(c in "0123456789abcdef" for c in q[2:]):
     direct = int(q[2:], 16)
@@ -953,6 +1038,9 @@ ASCII 转义：\\uXXXX 或 \\u{xxxx} 形式（如 python 图标写 \\uE235，md-
 自己写脚本扫描。
 未分配码位同样会被丢，一律转义（还原后终端显示为字体豆腐块属正常）。
 需要字面展示转义写法时写双反斜杠 \\uXXXX，客户端不会还原它。
+更省事：直接写 [[nf:图标名]] 语义标记（如 [[nf:python]]、[[nf:git-branch]]），
+客户端按本机字体解析成图标渲染；名称不确定就先查 nerdfont_lookup。
+代码段/围栏内的标记与转义一律不动。
 读取可能含图标或私有区字符的文件时，用 python 以码位输出而非原
 字符（输入方向同样会剥离 BMP 私有区）`,
     };
@@ -993,9 +1081,14 @@ ASCII 转义：\\uXXXX 或 \\u{xxxx} 形式（如 python 图标写 \\uE235，md-
     let fillUnknown = 0;
     let hatched = 0;
 
-    const content = msg.content.map((block: any) => {
-      if (block?.type !== "text" || typeof block.text !== "string") return block;
-      const u = unescapeAtRisk(block.text); // ① 还原转义
+    const content = [];
+    for (const block of msg.content as any[]) {
+      if (block?.type !== "text" || typeof block.text !== "string") {
+        content.push(block);
+        continue;
+      }
+      const marked = await resolveNfMarkers(block.text, ctx?.ui?.notify?.bind(ctx.ui)); // ⓪ 语义标记 → 转义
+      const u = unescapeAtRisk(marked); // ① 还原转义
       let text = u.text;
       restored += u.restored;
       restoredCps.push(...u.cps);
@@ -1010,9 +1103,9 @@ ASCII 转义：\\uXXXX 或 \\u{xxxx} 形式（如 python 图标写 \\uE235，md-
           for (const cp of r.cps) cp === null ? fillUnknown++ : fillKnown.push(cp);
         }
       }
-      if (text === block.text) return block;
-      return { ...block, text };
-    });
+      if (text === block.text) content.push(block);
+      else content.push({ ...block, text });
+    }
 
     // 洞3：流快照里的 at-risk 码位若在最终文本中消失 → 剥离证据
     if (streamTracking && streamSeenCps.size > 0) {

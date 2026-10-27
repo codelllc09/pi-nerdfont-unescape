@@ -133,6 +133,15 @@ const t = (name, ok, detail = "") => {
   const restoredN = notes.some((n) => n.includes("restored"));
   t("流转义还原不矛盾", restoredN && !missN, JSON.stringify(notes));
 
+  console.log("── ⑭ [[nf:]] 语义标记");
+  a = await end("看 [[nf:python]] 图标");
+  t("标记解析渲染", !a.includes("[[nf:python]]") && (hasCp(a, 0xe235) || a.includes("□U+E235")), JSON.stringify(a));
+  a = await end("```\n[[nf:python]]\n```");
+  t("围栏内标记不动", a.includes("[[nf:python]]"), JSON.stringify(a));
+  notes.length = 0;
+  a = await end("未知 [[nf:zzz_no_such]] 名");
+  t("未知名保留+点名", a.includes("[[nf:zzz_no_such]]") && notes.some((n) => n.includes("zzz_no_such")), JSON.stringify(notes));
+
   console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error("套件崩溃:", e); process.exit(1); });

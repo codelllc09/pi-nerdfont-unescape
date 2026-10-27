@@ -37,7 +37,7 @@ const MUTATIONS = [
     old: "if (ICON_CONTEXT.test(text)) {", new: "if (false) {" },
   { name: "M6 补框行内保护失效", suites: [1],
     old: "if (protectedRanges.some(([a, b]) => start >= a && start < b)) continue;", new: "if (false) continue;" },
-  { name: "M7 围栏失效(还原通道)", suites: [1, 2],
+  { name: "M7 围栏失效(还原通道)", suites: [1, 2], count: 2,
     old: "const FENCE = /^[ \\t]*(`{3,}|~{3,})/;", new: "const FENCE = /^(?!x)x/;" },
   { name: "M7b 补框围栏失效", suites: [1],
     old: "const tfm = line.match(/^[ \\t]*(`{3,}|~{3,})/);",
@@ -115,6 +115,12 @@ const MUTATIONS = [
   { name: "M35 真路径判定退回", suites: [2],
     old: "const realAbs = fsMod.existsSync(abs)\n          ? fsMod.realpathSync(abs)\n          : pathMod.join(fsMod.realpathSync(pathMod.dirname(abs)), pathMod.basename(abs));",
     new: "const realAbs = abs;" },
+  { name: "M36 语义标记失效", suites: [1],
+    old: "const NF_MARKER = /\\[\\[nf:([a-z0-9_-]{1,40})\\]\\]/gi;",
+    new: "const NF_MARKER = /(?!x)x/gi;" },
+  { name: "M37 未知名假解析", suites: [1],
+    old: "const cp = cache.get(k) ?? null;",
+    new: "const cp = cache.get(k) ?? 0xe235;" },
 ];
 
 const src = fs.readFileSync(SRC, "utf8");
