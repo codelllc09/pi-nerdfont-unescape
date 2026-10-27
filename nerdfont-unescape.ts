@@ -22,7 +22,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { execFile } from "node:child_process";
 
-const UNICODE_ESCAPE = /\\u(?:\{([0-9a-fA-F]{1,6})\}|([0-9a-fA-F]{4}))/g; // 1–6 位：PUA-B 至 U+10FFFD 需六位
 const TOFU = "\u25A1"; // □ 缺失字符框
 
 // BMP 已分配区间表：由本机 Python unicodedata 生成（Unicode 16.0.0）。
@@ -207,20 +206,22 @@ function unescapeAtRisk(text: string): {
   hatched: number; // 逃生舱字面化次数（双反斜杠 → 单反斜杠展示）
 } {
   if (!text.includes("\\u")) return { text, restored: 0, cps: [], substituted: [], hatched: 0 };
-  // 字面意图逃生舱：前置双反斜杠表示要展示转义写法本身。先摘出存哨兵，
-  // 主还原不碰它，事后拼回单反斜杠字面（\uLIT<n>; 为内部哨兵）。
-  const literals: string[] = [];
-  text = text.replace(/\\\\u(?:\{[0-9a-fA-F]{1,6}\}|[0-9a-fA-F]{4})/g, (m) => {
-    literals.push(m.slice(1));
-    return "\\uLIT" + (literals.length - 1) + ";";
-  });
   const cps: number[] = [];
   const substituted: number[] = [];
+  let hatched = 0;
   const visibleTag = (cp: number) =>
     `${TOFU}U+${cp.toString(16).toUpperCase().padStart(4, "0")}`;
   const cmap = (globalThis as any)[CMAP_STORE] as Ranges | undefined;
-  const unescapeLine = (line: string) =>
-    line.replace(UNICODE_ESCAPE, (whole, brace?: string, plain?: string) => {
+  // 单趟交替正则：分支A=双反斜杠（逃生舱，字面化），分支B=单反斜杠（还原/替换）。
+  // 同一位置先试双后试单；无内部哨兵——哨兵会与用户文本碰撞
+  // （2026-10-28 外部评审判例：字面 \uLIT0; 曾被错误改写）。
+  const ONE_PASS = /\\{2}u(?:\{([0-9a-fA-F]{1,6})\}|([0-9a-fA-F]{4}))|\\u(?:\{([0-9a-fA-F]{1,6})\}|([0-9a-fA-F]{4}))/g;
+  const processSegment = (seg: string) =>
+    seg.replace(ONE_PASS, (whole, aBrace?: string, aPlain?: string, brace?: string, plain?: string) => {
+      if (aBrace !== undefined || aPlain !== undefined) {
+        hatched++; // 逃生舱：双反斜杠 → 单反斜杠字面展示
+        return whole.slice(1);
+      }
       const cp = parseInt(brace ?? plain!, 16);
       if (isAtRisk(cp)) {
         const notInFonts = cmap !== undefined && !inRanges(cmap, cp);
@@ -233,28 +234,35 @@ function unescapeAtRisk(text: string): {
       }
       return whole; // 安全区（\ufffd、\u0041 等）原样保留
     });
-  // 围栏感知：代码块内的 \uXXXX 保持字面（复制粘贴保真），块外照常还原；
-  // 行内代码段（单反引号配对）同样保护——反引号里的内容是要复制走的代码
+  // 围栏 + 行内代码段保护：保护片段完全不过 processSegment——
+  // 逃生舱也不许碰代码（复制保真，2026-10-28 外部评审判例）
   const FENCE = /^[ \t]*(`{3,}|~{3,})/;
-  let fenceOpen: { ch: string; len: number } | null = null; // 异种/过短围栏线不闭合（CommonMark）
+  let fenceOpen: { ch: string; len: number } | null = null;
   const out = text
     .split("\n")
     .map((line) => {
       const fm = line.match(FENCE);
       if (fm) {
         const run = fm[1];
-        if (!fenceOpen) fenceOpen = { ch: run[0], len: run.length };
-        else if (run[0] === fenceOpen.ch && run.length >= fenceOpen.len) fenceOpen = null;
+        const rest = line.slice((fm.index ?? 0) + fm[0].length);
+        if (!fenceOpen) {
+          fenceOpen = { ch: run[0], len: run.length }; // 开启行允许信息串（```js）
+        } else if (
+          run[0] === fenceOpen.ch &&
+          run.length >= fenceOpen.len &&
+          /^[ \t]*$/.test(rest) // 闭合行必须纯围栏（```x 不算闭合，CommonMark）
+        ) {
+          fenceOpen = null;
+        }
         return line;
       }
       if (fenceOpen) return line;
       return splitByInlineSpans(line)
-        .map((seg) => (seg.protected ? seg.text : unescapeLine(seg.text)))
+        .map((seg) => (seg.protected ? seg.text : processSegment(seg.text)))
         .join("");
     })
     .join("\n");
-  const outFinal = out.replace(/\\uLIT(\d+);/g, (_m, k: string) => literals[+k] ?? "");
-  return { text: outFinal, restored: cps.length, cps, substituted, hatched: literals.length };
+  return { text: out, restored: cps.length, cps, substituted, hatched };
 }
 
 // ── 码位 → 语义区域命名（用于通知中说明丢/还原字符的“身份”）──
@@ -675,7 +683,8 @@ def unesc(s):
             if j < n and s[j] == "{":
                 k = s.find("}", j)
                 if k != -1 and 0 < k - j - 1 <= 6 and all(c in HEX for c in s[j+1:k]):
-                    out.append(chr(int(s[j+1:k], 16)))
+                    v = int(s[j+1:k], 16)
+                    out.append(chr(v) if v <= 0x10FFFF else "[U+%X]" % v)  # 超出码空间：可见标记而非崩溃
                     i = k + 1
                     continue
             else:
@@ -707,7 +716,12 @@ def to_prev(s):
     r = []
     for c in s:
         o = ord(c)
-        r.append((BS + "u%04X" % o) if 0xE000 <= o <= 0xF8FF else c)
+        if 0xE000 <= o <= 0xF8FF:
+            r.append(BS + "u%04X" % o)
+        elif 0xF0000 <= o <= 0x10FFFD:
+            r.append(BS + "u{%X}" % o)  # 增补区 PUA 也必须以转义字面量呈现（通道安全）
+        else:
+            r.append(c)
     return "".join(r)
 
 src = [unesc(l) for l in content.split("\\n")]
@@ -823,7 +837,8 @@ export default function (pi: ExtensionAPI) {
           "python3",
           ["-c", NF_LOOKUP_PY, String(params.query), String(params.limit ?? 20)],
           { timeout: 20000, maxBuffer: 1 << 20, env: { ...process.env, NF_STARSHIP: STARSHIP_DEFAULTS_RAW } },
-          (err, stdout, stderr) => resolve(err ? `ERROR: ${err.message}\n${stderr}` : stdout),
+          (err, stdout, stderr) =>
+            resolve(err ? `ERROR: failed — ${String(stderr).trim().slice(-200) || err.code || "unknown"}` : stdout),
         );
       });
       return { content: [{ type: "text", text: out }], details: {} };
@@ -853,15 +868,24 @@ export default function (pi: ExtensionAPI) {
     async execute(_toolCallId, params) {
       // writePath 安全线：默认仅允许 cwd 与系统 tmp 内；PI_RENDER_ALLOW_ANY=1 显式放开
       if (params.writePath && process.env.PI_RENDER_ALLOW_ANY !== "1") {
+        const pathMod = require("node:path");
+        const fsMod = require("node:fs");
         const wp = params.writePath;
         const tilde = wp.startsWith("~") ? os.homedir() + wp.slice(1) : wp;
-        const abs = require("node:path").isAbsolute(tilde) ? tilde : require("node:path").resolve(tilde);
+        const abs = pathMod.isAbsolute(tilde) ? tilde : pathMod.resolve(tilde);
+        // 真路径判定：符号链接先解析（/tmp/x → /dev/null 不得绕过，外部评审判例）
+        const realAbs = fsMod.existsSync(abs)
+          ? fsMod.realpathSync(abs)
+          : pathMod.join(fsMod.realpathSync(pathMod.dirname(abs)), pathMod.basename(abs));
+        const inside = (root: string) => {
+          const rr = fsMod.realpathSync(root);
+          return realAbs === rr || realAbs.startsWith(rr + pathMod.sep);
+        };
         const cwd = process.cwd();
         const tmp = os.tmpdir();
-        const inside = (root: string) => abs === root || abs.startsWith(root + require("node:path").sep);
         if (!inside(cwd) && !inside(tmp)) {
           return {
-            content: [{ type: "text", text: `ERROR: writePath must be inside cwd (${cwd}) or tmp (${tmp}); got ${abs}. Set PI_RENDER_ALLOW_ANY=1 to lift this guard.` }],
+            content: [{ type: "text", text: `ERROR: writePath must be inside cwd (${cwd}) or tmp (${tmp}); got ${realAbs}. Set PI_RENDER_ALLOW_ANY=1 to lift this guard.` }],
             details: {},
           };
         }
@@ -871,7 +895,8 @@ export default function (pi: ExtensionAPI) {
           "python3",
           ["-c", RENDER_PY, String(params.width ?? ""), params.frame ?? "none", params.writePath ?? ""],
           { timeout: 20000, maxBuffer: 1 << 22 },
-          (err, stdout, stderr) => resolve(err ? `ERROR: ${err.message}\n${stderr}` : stdout),
+          (err, stdout, stderr) =>
+            resolve(err ? `ERROR: failed — ${String(stderr).trim().slice(-200) || err.code || "unknown"}` : stdout),
         ) as any;
         child.stdin?.on("error", () => {});
         child.stdin?.end(params.content ?? "");
@@ -991,7 +1016,9 @@ ASCII 转义：\\uXXXX 或 \\u{xxxx} 形式（如 python 图标写 \\uE235，md-
 
     // 洞3：流快照里的 at-risk 码位若在最终文本中消失 → 剥离证据
     if (streamTracking && streamSeenCps.size > 0) {
-      const finalText = (msg.content as any[])
+      // 用映射后（已还原）的文本比对：流里裸字符 + 终稿转义并成功还原
+      // 属于同一字符的两种形态，不该同时报 MISSING 与已还原（外部评审判例）
+      const finalText = (content as any[])
         .filter((b: any) => b?.type === "text" && typeof b.text === "string")
         .map((b: any) => b.text)
         .join("");

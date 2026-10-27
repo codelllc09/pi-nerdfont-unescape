@@ -87,10 +87,15 @@ def candidate_chain():
     merged = {}
     merged.update(file_cfg() or {})
     merged.update(env_overrides())
-    chain = []
-    if all(merged.values()):
-        chain.append(merged)
+    # 部分覆盖：缺的键由兜底补齐（兜底不得反向覆盖 env/file）
     base = fallback_cfg()
+    if base:
+        for k, v in base.items():
+            merged.setdefault(k, v)
+    chain = []
+    KEYS = ("model", "base_url", "api_key")
+    if all(merged.get(k) for k in KEYS):
+        chain.append(merged)
     if base and base.get("model") != merged.get("model"):
         chain.append(base)
     return chain

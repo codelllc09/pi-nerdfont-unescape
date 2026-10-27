@@ -90,6 +90,21 @@ run(async () => {
     t("writePath 护栏", out.startsWith("ERROR:") && out.includes("PI_RENDER_ALLOW_ANY"), JSON.stringify(String(out).slice(0, 90)));
     out = await render({ content: "\\u{100000} 六位", width: 12 });
     t("六位转义按图标计宽", /pua=1/.test(out), JSON.stringify(out.slice(0, 140)));
+    // 2026-10-28 外部评审判例：增补区曾以裸字符返回，重新暴露给通道剥离
+    t("六位预览转义字面量", out.includes("\\u{100000}") && ![...out].some((c) => c.codePointAt(0) === 0x100000), JSON.stringify(out.split("\n").slice(0, 2)));
+    // 非法码位：可见标记 + 短错误（曾 chr 崩溃并把整段内嵌脚本泄进输出）
+    out = await render({ content: "\\u{ffffff} z", width: 10 });
+    t("非法码位短错误", out.includes("[U+FFFFFF]") && out.length < 400, `len=${out.length}`);
+    // 符号链接绕护栏（/tmp 内链接指向界外目标）
+    {
+      const fs = require("fs");
+      const link = "/tmp/pi-guard-link-test";
+      try { fs.unlinkSync(link); } catch {}
+      fs.symlinkSync("/dev/null", link);
+      const r5 = await render({ content: "y", writePath: link });
+      t("符号链接不绕护栏", r5.startsWith("ERROR"), JSON.stringify(r5.slice(0, 60)));
+      fs.unlinkSync(link);
+    }
   }
 
 

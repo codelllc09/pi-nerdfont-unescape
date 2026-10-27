@@ -71,6 +71,12 @@ const t = (name, ok, detail = "") => {
   a = await end("图标\n```\n''\n```\n\\ue235");
   t("围栏内不补框", a.includes("''"), JSON.stringify(a));
 
+  // 2026-10-28 外部评审判例：逃生舱曾改写围栏内代码（复制保真被破坏）
+  const fenceHatchIn = "```\nx = \\\\ue235\n```";
+  let rFH = await h["message_end"]({ message: { role: "assistant", content: [{ type: "text", text: fenceHatchIn }] } }, ctx);
+  const fenceHatchOut = rFH?.message?.content?.[0]?.text ?? fenceHatchIn;
+  t("围栏内双反斜杠字节保真", fenceHatchOut === fenceHatchIn, JSON.stringify(fenceHatchOut));
+
   console.log("── ⑤ 围栏保护");
   a = await end('外面 \\ue235\n```\nx = "\\ue0b0"\n```\n后 \\uf308');
   t("围栏内保持字面", a.includes('"\\ue0b0"'), JSON.stringify(a));
@@ -78,6 +84,9 @@ const t = (name, ok, detail = "") => {
 
   a = await end("```\n内 \\ue0b0\n~~~\n仍内 \\ue0b0\n```\n外 \\ue235");
   t("异种围栏不闭合", (a.match(/\\ue0b0/g) || []).length === 2 && hasCp(a, 0xe235), JSON.stringify(a));
+
+  a = await end("```\n内文 \\ue0b0\n```x\n仍内 \\ue0b0\n```\n外 \\ue235");
+  t("非纯围栏行不闭合", a.includes("仍内 \\ue0b0") && !hasCp(a, 0xe0b0) && hasCp(a, 0xe235), JSON.stringify(a));
 
   console.log("── ⑥ 行内代码段保护（v2 等长定界符）");
   // 回归 2026-10-27: 双反引号包裹形态曾绕过 v1 保护
@@ -115,6 +124,14 @@ const t = (name, ok, detail = "") => {
   await h["message_update"]({ message: { role: "assistant", content: [{ type: "text", text: rocket }] } }, ctx);
   await h["message_end"]({ message: { role: "assistant", content: [{ type: "text", text: "删掉emoji了" }] } }, ctx);
   t("emoji改稿不误报", !notes.some((n) => n.includes("MISSING")), notes.join("|"));
+
+  notes.length = 0;
+  await h["message_start"]?.({}, {});
+  await h["message_update"]({ message: { role: "assistant", content: [{ type: "text", text: "图 " + String.fromCodePoint(0xe235) }] } }, ctx);
+  await h["message_end"]({ message: { role: "assistant", content: [{ type: "text", text: "图 \\ue235" }] } }, ctx);
+  const missN = notes.some((n) => n.includes("MISSING"));
+  const restoredN = notes.some((n) => n.includes("restored"));
+  t("流转义还原不矛盾", restoredN && !missN, JSON.stringify(notes));
 
   console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
   process.exit(fail ? 1 : 0);
