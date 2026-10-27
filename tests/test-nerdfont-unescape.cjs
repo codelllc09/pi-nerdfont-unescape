@@ -22,6 +22,7 @@ const load = createJiti(__filename, {
     "@earendil-works/pi-ai": D + "/node_modules/@earendil-works/pi-ai/dist",
     "@earendil-works/pi-coding-agent": D + "/dist/index.js",
     "@earendil-works/pi-tui": D + "/node_modules/@earendil-works/pi-tui/dist/index.js",
+    typebox: D + "/node_modules/typebox",
   },
 });
 const mod = load("/home/user/Work/pi-nerdfont-unescape/nerdfont-unescape.ts");
