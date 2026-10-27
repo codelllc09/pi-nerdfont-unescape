@@ -37,6 +37,15 @@ both directions:
 pi install npm:pi-nerdfont-unescape
 ```
 
+## Runtime & testing dependencies
+
+The core extension is dependency-free TypeScript at runtime, but the glyph
+ground truth (cmap cache), `nerdfont_lookup`, and `render_preview` shell out
+to `python3` with [fontTools](https://fonttools.readthedocs.io/) — when
+missing, substitution degrades to category-only judgement **with a visible
+warning** (never silent). The test suites require the same. On Windows,
+`python3` may not exist by that name; expose one (e.g. via `py -3` shim).
+
 ## Testing & the vision-verify workflow
 
 `tests/test-nerdfont-unescape.cjs` — 20-case regression suite including

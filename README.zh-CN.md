@@ -33,6 +33,13 @@ LLM 的 tokenizer 不认识私有区码位（Nerd Font 图标全在此区）。�
 pi install npm:pi-nerdfont-unescape
 ```
 
+## 运行与测试依赖
+
+扩展本体运行时零依赖，但字形 ground truth（cmap 缓存）、`nerdfont_lookup`
+与 `render_preview` 会调用 `python3` + [fontTools]——缺失时可渲染性判定退化为
+类别判断，**可见告警**，绝不静默。测试套件同样依赖。Windows 下未必有名为
+`python3` 的命令，需自行暴露（如 `py -3` 做壳）。
+
 ## 测试与视觉验证工作流
 
 `tests/test-nerdfont-unescape.cjs` —— 20 项回归套件，含全部历史翻车形态。

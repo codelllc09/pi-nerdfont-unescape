@@ -28,5 +28,13 @@
 	"scripts": {
 		"test": "node tests/test-nerdfont-unescape.cjs && node tests/test-tools.cjs && python3 -m py_compile tests/vision-verify.py && echo 'py_compile ✓'",
 		"test:audit": "node tests/mutation-audit.cjs"
-	}
+	},
+	"files": [
+		"nerdfont-unescape.ts",
+		"README.md",
+		"README.zh-CN.md",
+		"LICENSE",
+		"tests/",
+		"!tests/__pycache__"
+	]
 }

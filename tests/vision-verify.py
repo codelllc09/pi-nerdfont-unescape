@@ -67,8 +67,8 @@ def file_cfg():
     except (OSError, ValueError) as e:
         print(f"警告: 配置文件 {path} 解析失败({e})，忽略之", file=sys.stderr)
         return None
-    c = {k: c.get(k) for k in ("model", "base_url", "api_key")}
-    return c if all(c.values()) else None
+    # 部分配置合法：有的键就返回，缺的由 env/兜底补
+    return {k: v for k, v in ((k, c.get(k)) for k in ("model", "base_url", "api_key")) if v}
 
 
 def fallback_cfg():
@@ -81,17 +81,19 @@ def fallback_cfg():
 
 
 def candidate_chain():
-    """① env → ② file 逐项覆盖到兜底之上（部分覆盖合法，只设模型也生效），
-    纯兜底作为第二候选兜住拒图/空响应。"""
-    base = fallback_cfg()
-    if not base:
-        return []
-    merged = dict(base)
-    merged.update(env_overrides())
+    """合并顺序：② file 先铺底，① env 后覆盖（env 胜出，与文档一致）；
+    部分覆盖合法（只设模型也生效）；本机无兜底凭证时，
+    env/file 拼齐三件套照样可用。纯兜底仅作拒图/空响应的第二候选。"""
+    merged = {}
     merged.update(file_cfg() or {})
-    if merged == base:
-        return [base]
-    return [merged, base]
+    merged.update(env_overrides())
+    chain = []
+    if all(merged.values()):
+        chain.append(merged)
+    base = fallback_cfg()
+    if base and base.get("model") != merged.get("model"):
+        chain.append(base)
+    return chain
 
 
 def main():

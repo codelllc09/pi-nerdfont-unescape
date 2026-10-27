@@ -22,7 +22,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { execFile } from "node:child_process";
 
-const UNICODE_ESCAPE = /\\u(?:\{([0-9a-fA-F]{1,5})\}|([0-9a-fA-F]{4}))/g;
+const UNICODE_ESCAPE = /\\u(?:\{([0-9a-fA-F]{1,6})\}|([0-9a-fA-F]{4}))/g; // 1–6 位：PUA-B 至 U+10FFFD 需六位
 const TOFU = "\u25A1"; // □ 缺失字符框
 
 // BMP 已分配区间表：由本机 Python unicodedata 生成（Unicode 16.0.0）。
@@ -169,29 +169,33 @@ function loadCmapCache(): boolean {
 /** 后台构建/刷新缓存（session_start 触发，不阻塞会话）。 */
 let cmapSig: string | undefined;
 
-function buildCmapCache(): void {
+function buildCmapCache(notify?: (msg: string, level: string) => void): void {
   execFile("python3", ["-c", CMAP_BUILD_PY, CMAP_CACHE], { timeout: 120000, maxBuffer: 1 << 24 },
     (err, stdout) => {
       if (!err) {
         loadCmapCache();
         console.error(`[nerdfont-unescape] ${String(stdout).trim()}`);
+        return;
       }
-      // 失败（含 fontTools 缺失）：保持未加载，类别判定兜底
+      // 失败（含 fontTools 缺失）：类别判定兜底可用，但必须留痕——静默降级是红线
+      const msg = `nerdfont-unescape: cmap 不可用（${err.message}）——可渲染性判定退化为类别判断；安装 python3 + fontTools 可恢复`;
+      console.error(`[nerdfont-unescape] cmap build FAILED: ${err.message}`);
+      notify?.(msg, "warning");
     });
 }
 
-function ensureCmapCache(): void {
+function ensureCmapCache(notify?: (msg: string, level: string) => void): void {
   const g = globalThis as any;
   if (g[CMAP_STORE]) return;
   if (!loadCmapCache()) {
-    buildCmapCache(); // 无缓存：首次构建
+    buildCmapCache(notify); // 无缓存：首次构建
     return;
   }
   // 有缓存：签名校验（字体增删/更新则后台重建，旧表继续用，不空窗）
   execFile("python3", ["-c", CMAP_BUILD_PY, CMAP_CACHE, "sig"], { timeout: 20000, maxBuffer: 1 << 16 },
     (err, stdout) => {
       const cur = err ? undefined : String(stdout).trim();
-      if (!err && cur && cur !== cmapSig) buildCmapCache();
+      if (!err && cur && cur !== cmapSig) buildCmapCache(notify);
     });
 }
 
@@ -205,7 +209,7 @@ function unescapeAtRisk(text: string): {
   // 字面意图逃生舱：前置双反斜杠表示要展示转义写法本身。先摘出存哨兵，
   // 主还原不碰它，事后拼回单反斜杠字面（\uLIT<n>; 为内部哨兵）。
   const literals: string[] = [];
-  text = text.replace(/\\\\u(?:\{[0-9a-fA-F]{1,5}\}|[0-9a-fA-F]{4})/g, (m) => {
+  text = text.replace(/\\\\u(?:\{[0-9a-fA-F]{1,6}\}|[0-9a-fA-F]{4})/g, (m) => {
     literals.push(m.slice(1));
     return "\\uLIT" + (literals.length - 1) + ";";
   });
@@ -231,15 +235,18 @@ function unescapeAtRisk(text: string): {
   // 围栏感知：代码块内的 \uXXXX 保持字面（复制粘贴保真），块外照常还原；
   // 行内代码段（单反引号配对）同样保护——反引号里的内容是要复制走的代码
   const FENCE = /^[ \t]*(`{3,}|~{3,})/;
-  let inFence = false;
+  let fenceOpen: { ch: string; len: number } | null = null; // 异种/过短围栏线不闭合（CommonMark）
   const out = text
     .split("\n")
     .map((line) => {
-      if (FENCE.test(line)) {
-        inFence = !inFence;
+      const fm = line.match(FENCE);
+      if (fm) {
+        const run = fm[1];
+        if (!fenceOpen) fenceOpen = { ch: run[0], len: run.length };
+        else if (run[0] === fenceOpen.ch && run.length >= fenceOpen.len) fenceOpen = null;
         return line;
       }
-      if (inFence) return line;
+      if (fenceOpen) return line;
       return splitByInlineSpans(line)
         .map((seg) => (seg.protected ? seg.text : unescapeLine(seg.text)))
         .join("");
@@ -458,15 +465,17 @@ function tofuFill(text: string): { text: string; filled: number; cps: (number | 
   //       不叠加破坏；
   //    d) 反引号对若仅隔空白仍与其它反引号相邻，视为引用构造
   //       （如包裹 ``` 的 `` `` `` 外壳），跳过。
-  let tfInFence = false;
+  let tfFenceOpen: { ch: string; len: number } | null = null;
   text = text
     .split("\n")
     .map((line) => {
-      if (/^[ \t]*(?:`{3,}|~{3,})/.test(line)) {
-        tfInFence = !tfInFence;
-        return line; // a) 围栏行
+      const tfm = line.match(/^[ \t]*(`{3,}|~{3,})/);
+      if (tfm) {
+        if (!tfFenceOpen) tfFenceOpen = { ch: tfm[1][0], len: tfm[1].length };
+        else if (tfm[1][0] === tfFenceOpen.ch && tfm[1].length >= tfFenceOpen.len) tfFenceOpen = null;
+        return line; // a) 围栏行（同字符等长才闭合）
       }
-      if (tfInFence) return line; // 围栏内容：代码字面量，不是丢失痕迹
+      if (tfFenceOpen) return line; // 围栏内容：代码字面量，不是丢失痕迹
       // e) 包裹结构预扫描：同类引号连写 + 中间仅词字符/私有区字符 + 闭合连写。
       //    两侧空引号对是包裹符而非丢失痕迹——结构检测比关键词可靠
       const wraps: Array<[number, number]> = [];
@@ -613,7 +622,7 @@ if not names:
     print("fontTools not installed (pip3 install fonttools)")
     sys.exit(0)
 direct = None
-if q.startswith("u+") and len(q) in (6, 7) and all(c in "0123456789abcdef" for c in q[2:]):
+if q.startswith("u+") and len(q) in (6, 7, 8) and all(c in "0123456789abcdef" for c in q[2:]):
     direct = int(q[2:], 16)
 rows, seen = [], set()
 for cp, name in names.items():
@@ -664,7 +673,7 @@ def unesc(s):
             j = i + 2
             if j < n and s[j] == "{":
                 k = s.find("}", j)
-                if k != -1 and 0 < k - j - 1 < 6 and all(c in HEX for c in s[j+1:k]):
+                if k != -1 and 0 < k - j - 1 <= 6 and all(c in HEX for c in s[j+1:k]):
                     out.append(chr(int(s[j+1:k], 16)))
                     i = k + 1
                     continue
@@ -764,7 +773,7 @@ if synth_top:
     rows.insert(0, TL + HR["="] * W + TR)
 if synth_bottom:
     rows.append(BL + HR["="] * W + BR)
-pua = sum(1 for l in src for c in l if 0xE000 <= ord(c) <= 0xF8FF)
+pua = sum(1 for l in src for c in l if 0xE000 <= ord(c) <= 0xF8FF or 0xF0000 <= ord(c) <= 0x10FFFD)
 print("[render_preview] frame=%s width=%d rows=%d pua=%d" % (frame, W, len(rows), pua))
 for r in rows:
     print(to_prev(r))
@@ -785,8 +794,8 @@ if path:
 `;
 
 export default function (pi: ExtensionAPI) {
-  pi.on("session_start", async () => {
-    ensureCmapCache();
+  pi.on("session_start", async (_e, ctx) => {
+    ensureCmapCache(ctx?.ui?.notify?.bind(ctx.ui));
   });
 
   // ④ 码位查询工具：给模型一个权威 oracle（本机 Nerd Font cmap），
@@ -841,6 +850,21 @@ export default function (pi: ExtensionAPI) {
       writePath: Type.Optional(Type.String({ description: "also write the real-char version to this file" })),
     }),
     async execute(_toolCallId, params) {
+      // writePath 安全线：默认仅允许 cwd 与系统 tmp 内；PI_RENDER_ALLOW_ANY=1 显式放开
+      if (params.writePath && process.env.PI_RENDER_ALLOW_ANY !== "1") {
+        const wp = params.writePath;
+        const tilde = wp.startsWith("~") ? os.homedir() + wp.slice(1) : wp;
+        const abs = require("node:path").isAbsolute(tilde) ? tilde : require("node:path").resolve(tilde);
+        const cwd = process.cwd();
+        const tmp = os.tmpdir();
+        const inside = (root: string) => abs === root || abs.startsWith(root + require("node:path").sep);
+        if (!inside(cwd) && !inside(tmp)) {
+          return {
+            content: [{ type: "text", text: `ERROR: writePath must be inside cwd (${cwd}) or tmp (${tmp}); got ${abs}. Set PI_RENDER_ALLOW_ANY=1 to lift this guard.` }],
+            details: {},
+          };
+        }
+      }
       const out = await new Promise<string>((resolve) => {
         const child = execFile(
           "python3",
@@ -877,7 +901,7 @@ export default function (pi: ExtensionAPI) {
     if (texts.length > 0) streamTracking = true;
     for (const ch of texts) {
       const cp = ch.codePointAt(0)!;
-      if (cp >= 0xe000 && cp <= 0x10fffd) streamSeenCps.add(cp);
+      if (isAtRisk(cp)) streamSeenCps.add(cp); // 收窄：emoji/普通增补字符改稿不是传输丢失
     }
   });
 

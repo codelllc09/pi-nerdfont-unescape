@@ -7,21 +7,12 @@
  *       但期望错了就全错。实际输出由扩展真实跑出（非手写），
  *       提供 原始/码位解码 双视图，审查不依赖浏览器字体。
  */
-const D = "/home/user/.local/share/pi-node/node-v22.23.2-linux-x64/lib/node_modules/@earendil-works/pi-coding-agent";
-const { createJiti } = require(D + "/node_modules/jiti/lib/jiti.mjs");
+const { jitiLoad, extPath } = require("./lib.cjs");
 const fs = require("fs");
 const path = require("path");
 
-const load = createJiti(__filename, {
-  interopDefault: true,
-  alias: {
-    "@earendil-works/pi-ai": D + "/node_modules/@earendil-works/pi-ai/dist",
-    "@earendil-works/pi-coding-agent": D + "/dist/index.js",
-    "@earendil-works/pi-tui": D + "/node_modules/@earendil-works/pi-tui/dist/index.js",
-    typebox: D + "/node_modules/typebox/build/index.mjs",
-  },
-});
-const mod = load(path.join(__dirname, "..", "nerdfont-unescape.ts"));
+const mod = jitiLoad();
+void extPath;
 const handlers = {}; const tools = {}; let notes = [];
 mod.default({
   registerTool: (t) => { tools[t.name] = t; },
@@ -216,7 +207,7 @@ ${rows.join("\n")}
 </table></body></html>`;
   // ── 字体子集内嵌：浏览器（尤其沙箱）未必能用系统 Nerd Font，这里把
   //    页面实际用到的图标字形子集成 woff2 base64 塞进 @font-face，百分百离线可渲染
-  const NF_SRC = "/home/user/.local/share/fonts/NFM.ttf"; // Symbols Nerd Font Mono
+  const NF_SRC = process.env.PI_NF_FONT || path.join(require("os").homedir(), ".local/share/fonts/NFM.ttf"); // Symbols Nerd Font Mono（PI_NF_FONT 可覆盖）
   const cps = [...seenCps].sort((a, b) => a - b);
   const uni = cps.map((c) => c.toString(16)).join(",") || "e235";
   const woff2 = require("child_process").spawnSync(

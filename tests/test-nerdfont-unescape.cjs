@@ -14,18 +14,7 @@
  *   3. 单测全绿 ≠ 正确：真实消息的 Markdown 形态（双反引号包裹等）
  *      可能绕过保护。重要改动须配合 vision-verify.py 做端到端视觉验证。
  */
-const D = "/home/user/.local/share/pi-node/node-v22.23.2-linux-x64/lib/node_modules/@earendil-works/pi-coding-agent";
-const { createJiti } = require(D + "/node_modules/jiti/lib/jiti.mjs");
-const load = createJiti(__filename, {
-  interopDefault: true,
-  alias: {
-    "@earendil-works/pi-ai": D + "/node_modules/@earendil-works/pi-ai/dist",
-    "@earendil-works/pi-coding-agent": D + "/dist/index.js",
-    "@earendil-works/pi-tui": D + "/node_modules/@earendil-works/pi-tui/dist/index.js",
-    typebox: D + "/node_modules/typebox/build/index.mjs",
-  },
-});
-const mod = load(process.env.EXT_PATH || "/home/user/Work/pi-nerdfont-unescape/nerdfont-unescape.ts");
+const mod = require("./lib.cjs").jitiLoad();
 
 const h = {}; const notes = [];
 mod.default({ registerTool: () => {}, on: (e, f) => { h[e] = f; } });
@@ -51,9 +40,16 @@ const t = (name, ok, detail = "") => {
   t("4位形式还原", hasCp(a, 0xe235));
   t("括号形式还原", hasCp(a, 0xf0805));
 
+  a = await end("PUA-B \\u{100000} 与 \\u{10fffd}");
+  // 六位码位在本机字体必无字形 → 走可见替换而非还原（正则六位支持是前提）
+  t("六位码位(PUA-B)可见标记", a.includes("□U+100000") && a.includes("□U+10FFFD"), JSON.stringify(a));
+
   console.log("── ② 字面逃生舱（双反斜杠）");
   a = await end("字面写法 \\\\ue235 不还原");
   t("双反斜杠保持字面", a.includes("\\ue235") && !hasCp(a, 0xe235), JSON.stringify(a));
+
+  a = await end("字面 \\\\u{100000} 保持"); // 源码四反斜杠 = 实际双反斜杠（逃生舱入口）
+  t("六位逃生舱保持字面", a.includes("\\u{100000}") && !a.includes("□U+100000"), JSON.stringify(a));
 
   console.log("── ③ 不可见码位 → 可见标记");
   a = await end("\\ufdd0 \\u{e0041} \\u0378");
@@ -77,6 +73,9 @@ const t = (name, ok, detail = "") => {
   a = await end('外面 \\ue235\n```\nx = "\\ue0b0"\n```\n后 \\uf308');
   t("围栏内保持字面", a.includes('"\\ue0b0"'), JSON.stringify(a));
   t("围栏外还原", hasCp(a, 0xe235) && hasCp(a, 0xf308));
+
+  a = await end("```\n内 \\ue0b0\n~~~\n仍内 \\ue0b0\n```\n外 \\ue235");
+  t("异种围栏不闭合", (a.match(/\\ue0b0/g) || []).length === 2 && hasCp(a, 0xe235), JSON.stringify(a));
 
   console.log("── ⑥ 行内代码段保护（v2 等长定界符）");
   // 回归 2026-10-27: 双反引号包裹形态曾绕过 v1 保护
@@ -107,6 +106,13 @@ const t = (name, ok, detail = "") => {
   await h["message_update"]({ message: { role: "assistant", content: [{ type: "text", text: stable }] } }, ctx);
   await h["message_end"]({ message: { role: "assistant", content: [{ type: "text", text: stable }] } }, ctx);
   t("一致时无误报", !notes.some((n) => n.includes("MISSING")), notes.join("|"));
+
+  notes.length = 0;
+  await h["message_start"]?.({}, {});
+  const rocket = String.fromCodePoint(0x1f680) + " 起飞";
+  await h["message_update"]({ message: { role: "assistant", content: [{ type: "text", text: rocket }] } }, ctx);
+  await h["message_end"]({ message: { role: "assistant", content: [{ type: "text", text: "删掉emoji了" }] } }, ctx);
+  t("emoji改稿不误报", !notes.some((n) => n.includes("MISSING")), notes.join("|"));
 
   console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
   process.exit(fail ? 1 : 0);

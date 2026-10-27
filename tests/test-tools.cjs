@@ -7,18 +7,16 @@
  * 本文件自证了陷阱第 3 判例（见「增补区 → 括号形式」用例注释）：JS 字符串
  * 字面量的 \uXXXX 也只吃 4 位——不止正则，fromCodePoint 才是唯一正解。
  */
-const D = "/home/user/.local/share/pi-node/node-v22.23.2-linux-x64/lib/node_modules/@earendil-works/pi-coding-agent";
-const { createJiti } = require(D + "/node_modules/jiti/lib/jiti.mjs");
-const load = createJiti(__filename, {
-  interopDefault: true,
-  alias: {
-    "@earendil-works/pi-ai": D + "/node_modules/@earendil-works/pi-ai/dist",
-    "@earendil-works/pi-coding-agent": D + "/dist/index.js",
-    "@earendil-works/pi-tui": D + "/node_modules/@earendil-works/pi-tui/dist/index.js",
-    typebox: D + "/node_modules/typebox/build/index.mjs",
-  },
-});
-const mod = load(process.env.EXT_PATH || "/home/user/Work/pi-nerdfont-unescape/nerdfont-unescape.ts");
+// 工具与 cmap 同源依赖：python3 + fontTools。缺失即失败——静默跳过等于假绿
+{
+  const { spawnSync } = require("child_process");
+  const r = spawnSync("python3", ["-c", "import fontTools"], { encoding: "utf8" });
+  if (r.status !== 0) {
+    console.error("本套件需要 python3 与 fontTools（pip install fonttools）。缺失即失败，不静默跳过。");
+    process.exit(1);
+  }
+}
+const mod = require("./lib.cjs").jitiLoad();
 
 const handlers = {}; const tools = {}; const notes = [];
 mod.default({
@@ -83,7 +81,12 @@ run(async () => {
     const written = require("fs").readFileSync(tmp, "utf8");
     t("writePath 写出真字符", hasCp(written, 0xe235), JSON.stringify(written.slice(0, 40)));
     t("写盘回报", out.includes(tmp), "");
+    out = await render({ content: "x", writePath: "/etc/pi-render-guard-test.out" });
+    t("writePath 护栏", out.startsWith("ERROR:") && out.includes("PI_RENDER_ALLOW_ANY"), JSON.stringify(String(out).slice(0, 90)));
+    out = await render({ content: "\\u{100000} 六位", width: 12 });
+    t("六位转义按图标计宽", /pua=1/.test(out), JSON.stringify(out.slice(0, 140)));
   }
+
 
   console.log("── ⑪ 系统提示注入（before_agent_start）");
   const r = await handlers["before_agent_start"]({ systemPrompt: "BASE" }, ctx);
@@ -100,6 +103,10 @@ run(async () => {
   const it = ir.text ?? ""; // 防御：transform 失效时逐项变红而非套件崩溃
   t("增补区 → 括号形式", ir.action === "transform" && it.includes("\\u{f0805}"), JSON.stringify(ir));
   t("通知级别 warning", notes.length > 0 && notes[notes.length - 1].t === "warning", JSON.stringify(notes.at(-1)));
+
+  const six = "b" + String.fromCodePoint(0x10fffd) + "c";
+  ir = await handlers["input"]({ type: "input", text: six, source: "interactive" }, ctx);
+  t("PUA-B → 六位括号形式", ir.action === "transform" && (ir.text ?? "").includes("\\u{10fffd}"), JSON.stringify(ir));
 
   console.log("── ⑬ Markdown 边角（message_end）");
   const end = async (text) => {
