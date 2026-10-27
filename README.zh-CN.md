@@ -51,4 +51,4 @@ cmap ground truth、输入侧转义、流级探测、CommonMark v2 行内扫描�
 
 ## 许可证
 
-0BSD —— 随便用，不用署名。
+MIT —— 使用需保留版权与许可声明。

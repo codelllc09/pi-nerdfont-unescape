@@ -2,7 +2,7 @@
 	"name": "pi-nerdfont-unescape",
 	"version": "0.1.0",
 	"description": "Lossless, observable Nerd Font icon output for the Pi TUI: escape protocol, code-span protection, visible substitution, input escaping, stream drop detection, glyph lookup and layout tools",
-	"license": "0BSD",
+	"license": "MIT",
 	"keywords": [
 		"pi-package",
 		"pi-extension",

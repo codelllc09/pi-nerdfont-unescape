@@ -61,4 +61,4 @@ not by tests).
 
 ## License
 
-0BSD — do whatever you want, no attribution required.
+MIT — keep the copyright and license notice when you use it.
