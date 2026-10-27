@@ -49,13 +49,13 @@ def pi_files(rel):
     return os.path.expanduser(os.path.join("~/.pi/agent", rel))
 
 
-def env_cfg():
-    c = {
+def env_overrides():
+    """部分覆盖合法：只设模型也生效，缺的件由兜底补齐（而非整体丢弃）。"""
+    return {k: v for k, v in {
         "model": os.environ.get("PI_VISION_MODEL"),
         "base_url": os.environ.get("PI_VISION_BASE_URL"),
         "api_key": os.environ.get("PI_VISION_API_KEY"),
-    }
-    return c if all(c.values()) else None
+    }.items() if v}
 
 
 def file_cfg():
@@ -81,13 +81,17 @@ def fallback_cfg():
 
 
 def candidate_chain():
-    """按 ① env → ② file → ③ 兜底 产出完整三元组。"""
-    seen, chain = set(), []
-    for c in (env_cfg(), file_cfg(), fallback_cfg()):
-        if c and c["model"] not in seen:
-            seen.add(c["model"])
-            chain.append(c)
-    return chain
+    """① env → ② file 逐项覆盖到兜底之上（部分覆盖合法，只设模型也生效），
+    纯兜底作为第二候选兜住拒图/空响应。"""
+    base = fallback_cfg()
+    if not base:
+        return []
+    merged = dict(base)
+    merged.update(env_overrides())
+    merged.update(file_cfg() or {})
+    if merged == base:
+        return [base]
+    return [merged, base]
 
 
 def main():
