@@ -21,6 +21,11 @@
 		"@earendil-works/pi-coding-agent": "*"
 	},
 	"pi": {
-		"extensions": ["./nerdfont-unescape.ts"]
+		"extensions": [
+			"./nerdfont-unescape.ts"
+		]
+	},
+	"scripts": {
+		"test": "node tests/test-nerdfont-unescape.cjs && node tests/test-tools.cjs"
 	}
 }
