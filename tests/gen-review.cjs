@@ -51,6 +51,10 @@ const CASES = [
     expect: "文本含 U+F0805 真字符（增补区括号形式还原）", mut: "M1 M2" },
   { sec: "② 字面逃生舱", name: "双反斜杠保持字面", kind: "end", in: "字面写法 \\\\ue235 不还原",
     expect: "显示为单反斜杠字面 \\ue235，不出现真字符", mut: "M3" },
+  { sec: "② 字面逃生舱", name: "六位逃生舱保持字面", kind: "end", in: "字面 \\\\u{100000} 保持",
+    expect: "六位双反斜杠同样字面化", mut: "M3 M24" },
+  { sec: "② 字面逃生舱", name: "围栏内双反斜杠字节保真", kind: "end", in: "```\nx = \\\\ue235\n```",
+    expect: "围栏内代码逐字节不动（逃生舱不碰代码）", mut: "M7" },
   { sec: "③ 不可见码位 → 可见标记", name: "非字符", kind: "end", in: "\\ufdd0 \\u{e0041} \\u0378",
     expect: "U+FDD0 → □U+FDD0（可见标记，绝不隐形）", mut: "M4" },
   { sec: "③ 不可见码位 → 可见标记", name: "Tags(括号形式)", kind: "end", in: "\\ufdd0 \\u{e0041} \\u0378",
@@ -67,7 +71,11 @@ const CASES = [
     expect: "围栏内 '' 是代码 → 原样保留", mut: "M7b" },
   { sec: "⑤ 围栏保护", name: "围栏内保持字面", kind: "end", in: '外面 \\ue235\n```\nx = "\\ue0b0"\n```\n后 \\uf308',
     expect: '围栏内 "\\ue0b0" 保持字面（复制保真）', mut: "M7" },
-  { sec: "⑤ 围栏保护", name: "围栏外还原", kind: "end", in: '外面 \\ue235\n```\nx = "\\ue0b0"\n```\n后 \\uf308',
+  { sec: "⑤ 围栏保护", name: "围栏外还原", kind: "end"
+  { sec: "⑤ 围栏保护", name: "异种围栏不闭合", kind: "end", in: "```\n内 \\ue0b0\n~~~\n仍内 \\ue0b0\n```\n外 \\ue235",
+    expect: "~~~ 不能闭合 ``` 围栏", mut: "M26" },
+  { sec: "⑤ 围栏保护", name: "非纯围栏行不闭合", kind: "end", in: "```\n内文 \\ue0b0\n```x\n仍内 \\ue0b0\n```\n外 \\ue235",
+    expect: "```x 行不是闭合围栏", mut: "M26 M34" },, in: '外面 \\ue235\n```\nx = "\\ue0b0"\n```\n后 \\uf308',
     expect: "围栏外 E235、F308 还原为真字符", mut: "M1 M7" },
   { sec: "⑥ 行内代码段保护(v2)", name: "双反引号包裹[回归]", kind: "end", in: '| `` `symbol = "\\ue0b0"` `` 行内段 |',
     expect: 'CommonMark 双反引号包裹内 "\\ue0b0" 保持字面（2026-10-27 视觉验证判例）', mut: "M8" },
@@ -81,7 +89,11 @@ const CASES = [
     expect: "含 at-risk 字符 → action=transform（改写后再发）", mut: "M9" },
   { sec: "⑦ 输入侧自动转义", name: "无裸字符", kind: "input", in: "看 ⟦E235⟧ 图标",
     expect: "发出文本里只剩 \\ue235 转义，无裸 PUA 字符", mut: "M9" },
-  { sec: "⑧ 流级丢失探测", name: "丢失被点名", kind: "stream", in: "update: ⟦E235⟧ 在场 → end: 在场",
+  { sec: "⑧ 流级丢失探测", name: "丢失被点名", kind: "stream"
+  { sec: "⑧ 流级丢失探测", name: "流转义还原不矛盾", kind: "stream", in: "流裸字符 → 终稿转义并还原",
+    expect: "同一字符两种形态 → 只报已还原，不报 MISSING", mut: "M31" },
+  { sec: "⑧ 流级丢失探测", name: "emoji改稿不误报", kind: "stream", in: "流 ⟦1F680⟧ → 终稿删掉",
+    expect: "emoji 正常改稿不进丢失快照", mut: "M27" },, in: "update: ⟦E235⟧ 在场 → end: 在场",
     expect: "流里见过、终稿消失 → 通知 MISSING 点名码位（证据性告警，非确证）", mut: "M10" },
   { sec: "⑧ 流级丢失探测", name: "一致时无误报", kind: "stream", in: "update 与 end 都真含 ⟦E235⟧",
     expect: "流与终稿一致 → 不告警", mut: "M11" },
@@ -107,7 +119,13 @@ const CASES = [
     expect: "预览文本中 PUA 以 \\ue235 字面量呈现（通道安全）", mut: "M16" },
   { sec: "⑩ render_preview", name: "writePath 写出真字符", kind: "render", in: "\\ue235 图标 / writePath",
     expect: "文件内容含 E235 真字符（绕过通道剥离）", mut: "M16 M21" },
-  { sec: "⑩ render_preview", name: "写盘回报", kind: "render", in: "同上",
+  { sec: "⑩ render_preview", name: "写盘回报", kind: "render"
+  { sec: "⑩ render_preview", name: "六位预览转义字面量", kind: "render", in: "\\u{100000}",
+    expect: "增补区 PUA 以 \\u{100000} 字面量呈现（通道安全）", mut: "M32" },
+  { sec: "⑩ render_preview", name: "非法码位短错误", kind: "render", in: "\\u{ffffff}",
+    expect: "[U+FFFFFF] 可见标记 + 短错误", mut: "M33" },
+  { sec: "⑩ render_preview", name: "符号链接不绕护栏", kind: "render", in: "writePath=/tmp/link→/dev/null",
+    expect: "真路径判定：链接先解析再查界", mut: "M28 M35" },, in: "同上",
     expect: "输出回报写入路径", mut: "M21" },
   { sec: "⑪ 系统提示注入", name: "追加而非替换", kind: "prompt", in: 'BASE',
     expect: "返回 systemPrompt 以原 BASE 开头（追加协议，不覆盖）", mut: "M12" },
@@ -119,7 +137,9 @@ const CASES = [
     expect: "无 at-risk → action=continue（原文直发，零打扰）", mut: "M22" },
   { sec: "⑫ 输入处理边角", name: "增补区 → 括号形式", kind: "input", in: "a⟦F0805⟧⟦E235⟧",
     expect: "增补区字符转义为 \\u{f0805} 括号形式", mut: "M9" },
-  { sec: "⑫ 输入处理边角", name: "通知级别 warning", kind: "input", in: "a⟦F0805⟧⟦E235⟧",
+  { sec: "⑫ 输入处理边角", name: "通知级别 warning", kind: "input"
+  { sec: "⑫ 输入处理边角", name: "PUA-B → 六位括号形式", kind: "input", in: "b⟦10FFFD⟧c",
+    expect: "六位码位输入侧生成 \\u{10fffd}", mut: "M9" },, in: "a⟦F0805⟧⟦E235⟧",
     expect: "自动转义时通知级别为 warning", mut: "M23" },
   { sec: "⑬ Markdown 边角", name: "波浪围栏保护", kind: "end", in: "前 \\ue235\n~~~\nx = \"\\ue0b0\"\n~~~\n后 \\uf308",
     expect: "~~~ 围栏与 ``` 同等保护", mut: "M7" },
@@ -153,6 +173,8 @@ const CASES = [
       } else if (c.kind === "stream") {
         if (c.name === "丢失被点名") await stream(["\ue235 在场"], "在场");
         else if (c.name === "一致时无误报") { const s = "稳定 \ue235 在场"; await stream([s], s); }
+        else if (c.name === "流转义还原不矛盾") await stream([String.fromCodePoint(0xe235) + " 图"], "图 \\ue235");
+        else if (c.name === "emoji改稿不误报") await stream([String.fromCodePoint(0x1f680) + " 起飞"], "删掉了");
         else await (async () => {
           await handlers["message_start"]?.({}, {});
           await handlers["message_update"]({ message: { role: "user", content: [{ type: "text", text: "\ue235" }] } }, ctx);
@@ -173,6 +195,15 @@ const CASES = [
         if (c.name.startsWith("CJK")) out = await render({ content: "中文", width: 8 });
         else if (c.name.startsWith("TAB")) out = await render({ content: "左段\t右段", width: 20 });
         else if (c.name === "双边框") out = await render({ content: "标题", frame: "double", width: 10 });
+        else if (c.name === "六位预览转义字面量") out = await render({ content: "\\u{100000} x", width: 10 });
+        else if (c.name === "非法码位短错误") out = await render({ content: "\\u{ffffff} z", width: 10 });
+        else if (c.name === "符号链接不绕护栏") {
+          const fs = require("fs"); const link = "/tmp/review-guard-link";
+          try { fs.unlinkSync(link); } catch {}
+          fs.symlinkSync("/dev/null", link);
+          out = await render({ content: "y", writePath: link });
+          fs.unlinkSync(link);
+        }
         else if (c.name === "预览含转义字面量") out = await render({ content: "\\ue235 图标", width: 10 });
         else out = await render({ content: "\\ue235 图标", width: 10, writePath: "/tmp/review-render.out" });
         actual = dec(out).split("\n").slice(0, 6).join("\n");
