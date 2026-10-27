@@ -99,6 +99,9 @@ const MUTATIONS = [
   { name: "M29 render六位退回", suites: [2],
     old: "0 < k - j - 1 <= 6",
     new: "0 < k - j - 1 < 6" },
+  { name: "M30 逃生舱落盘旁路", suites: [1],
+    old: "if (hatched > 0) return { message: { ...msg, content } };",
+    new: "if (false) return { message: { ...msg, content } };" },
 ];
 
 const src = fs.readFileSync(SRC, "utf8");

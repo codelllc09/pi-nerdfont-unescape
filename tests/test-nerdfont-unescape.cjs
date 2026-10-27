@@ -46,10 +46,12 @@ const t = (name, ok, detail = "") => {
 
   console.log("── ② 字面逃生舱（双反斜杠）");
   a = await end("字面写法 \\\\ue235 不还原");
-  t("双反斜杠保持字面", a.includes("\\ue235") && !hasCp(a, 0xe235), JSON.stringify(a));
+  // 2026-10-28 外部评审判例：旧断言单/双反斜杠都能过（includes 子串两侧通吃），
+  // 且 ?? 回退掩盖了改写被丢弃——收紧为「单在场 + 双绝迹 + 真字符绝迹」
+  t("双反斜杠保持字面", a.includes("\\ue235") && !a.includes("\\\\ue235") && !hasCp(a, 0xe235), JSON.stringify(a));
 
   a = await end("字面 \\\\u{100000} 保持"); // 源码四反斜杠 = 实际双反斜杠（逃生舱入口）
-  t("六位逃生舱保持字面", a.includes("\\u{100000}") && !a.includes("□U+100000"), JSON.stringify(a));
+  t("六位逃生舱保持字面", a.includes("\\u{100000}") && !a.includes("\\\\u{100000}") && !a.includes("□U+100000"), JSON.stringify(a));
 
   console.log("── ③ 不可见码位 → 可见标记");
   a = await end("\\ufdd0 \\u{e0041} \\u0378");

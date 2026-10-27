@@ -46,9 +46,14 @@ run(async () => {
     };
     let out = await call("python");
     t("关键词 python → 含 E235 转义", /\\u[eE]235|U\+E235/i.test(out), JSON.stringify(out.slice(0, 120)));
-    // 断言收紧到字形行的族前缀——无命中提示文本恰含 "python"/"branch" 字样，
-    // 宽松正则曾被它喂绿（2026-10-28 变异审计判例）
-    t("族别优先（字形行带族前缀）", /(?:nf-)?(?:md|custom|seti|dev|oct|fa|pl|linux)-[a-z]/.test(out), JSON.stringify(out.slice(0, 120)));
+    // 断言收紧到「首个字形行」的族前缀——既防无命中提示喂绿（提示含 python/branch
+    // 字样），也真正断言优先排序结果（首个字形来自优先族）
+    const glyphRows = out.split("\n").filter((l) => /U\+[0-9A-F]{4,5}/.test(l));
+    t(
+      "族别优先（首行即优先族）",
+      glyphRows.length > 0 && /(?:nf-)?(?:md|custom|seti|dev|oct|fae|fa|pl|linux)-[a-z]/.test(glyphRows[0]),
+      JSON.stringify((glyphRows[0] || out).slice(0, 120)),
+    );
     out = await call("U+E0A0");
     t("码位查询 → E0A0 在场", /e0a0|pl-branch/i.test(out), JSON.stringify(out.slice(0, 120)));
     out = await call("starship nodejs");

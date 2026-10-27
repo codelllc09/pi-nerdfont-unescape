@@ -204,8 +204,9 @@ function unescapeAtRisk(text: string): {
   restored: number;
   cps: number[];
   substituted: number[]; // 天生不可见码位，已替换为 □U+XXXX 可见标记
+  hatched: number; // 逃生舱字面化次数（双反斜杠 → 单反斜杠展示）
 } {
-  if (!text.includes("\\u")) return { text, restored: 0, cps: [], substituted: [] };
+  if (!text.includes("\\u")) return { text, restored: 0, cps: [], substituted: [], hatched: 0 };
   // 字面意图逃生舱：前置双反斜杠表示要展示转义写法本身。先摘出存哨兵，
   // 主还原不碰它，事后拼回单反斜杠字面（\uLIT<n>; 为内部哨兵）。
   const literals: string[] = [];
@@ -253,7 +254,7 @@ function unescapeAtRisk(text: string): {
     })
     .join("\n");
   const outFinal = out.replace(/\\uLIT(\d+);/g, (_m, k: string) => literals[+k] ?? "");
-  return { text: outFinal, restored: cps.length, cps, substituted };
+  return { text: outFinal, restored: cps.length, cps, substituted, hatched: literals.length };
 }
 
 // ── 码位 → 语义区域命名（用于通知中说明丢/还原字符的“身份”）──
@@ -965,6 +966,7 @@ ASCII 转义：\\uXXXX 或 \\u{xxxx} 形式（如 python 图标写 \\uE235，md-
     const substitutedCps: number[] = [];
     const fillKnown: number[] = [];
     let fillUnknown = 0;
+    let hatched = 0;
 
     const content = msg.content.map((block: any) => {
       if (block?.type !== "text" || typeof block.text !== "string") return block;
@@ -973,6 +975,7 @@ ASCII 转义：\\uXXXX 或 \\u{xxxx} 形式（如 python 图标写 \\uE235，md-
       restored += u.restored;
       restoredCps.push(...u.cps);
       substitutedCps.push(...u.substituted);
+      hatched += u.hatched;
       if (ICON_CONTEXT.test(text)) {
         // ② 痕迹补框（仅相关上下文，压误报）
         const r = tofuFill(text);
@@ -1005,7 +1008,12 @@ ASCII 转义：\\uXXXX 或 \\u{xxxx} 形式（如 python 图标写 \\uE235，md-
       streamTracking = false;
     }
 
-    if (restored === 0 && filled === 0 && substitutedCps.length === 0) return;
+    // 仅逃生舱字面化也必须落盘改写（双反斜杠 → 单反斜杠展示）；
+    // 2026-10-28 外部评审判例：此前 hatched 不计数导致改写被这里丢弃（真实假绿）
+    if (restored === 0 && filled === 0 && substitutedCps.length === 0) {
+      if (hatched > 0) return { message: { ...msg, content } }; // 带上映射后的 content
+      return;
+    }
 
     // ③ 告警：先说问题（丢什么、哪个码区），再说处置（补 □ / 已还原），
     //    最后给建议；码区用语义名（rare Han ideographs、Egyptian Hieroglyphs…）
