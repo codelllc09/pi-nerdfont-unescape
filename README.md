@@ -45,9 +45,15 @@ every historical bug form.
 **Rendering correctness is ultimately judged by pixels**: unit tests can
 lie green (two documented ways in the suite header). After significant
 changes, send a real message exercising the new behavior, screenshot it,
-and run `python3 tests/vision-verify.py <screenshot>` (uses glm-4.6v via
-Pi's configured credentials) to have a vision model audit the actual
-rendering. This workflow caught a real bug that 12 green unit tests missed.
+and run `python3 tests/vision-verify.py <screenshot>` to have a vision
+model audit the actual rendering. This workflow caught a real bug that 12
+green unit tests missed.
+
+The vision model is **not hardcoded** — resolve order: `PI_VISION_MODEL` /
+`PI_VISION_BASE_URL` / `PI_VISION_API_KEY` env vars →
+`~/.config/pi-nerdfont-unescape/vision.json` → fallback default (Pi's own
+credentials + `glm-5.3-flash`). Any OpenAI-compatible endpoint works; forks
+should set level ① or ②.
 
 ## Design history (condensed)
 

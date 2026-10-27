@@ -39,8 +39,13 @@ pi install npm:pi-nerdfont-unescape
 
 **渲染正确性的最终裁决权在像素**：单测会假绿（套件头注释记录了两种
 成因）。重要改动后：真实输出一条含目标形态的消息 → 截图 →
-`python3 tests/vision-verify.py <截图>`（用 pi 配置的凭证调 glm-4.6v）
-让视觉模型审计实际渲染。该工作流抓到过 12 项绿灯单测漏掉的真 bug。
+`python3 tests/vision-verify.py <截图)` 让视觉模型审计实际渲染。
+该工作流抓到过 12 项绿灯单测漏掉的真 bug。
+
+视觉模型**不写死**——解析顺序：`PI_VISION_MODEL` / `PI_VISION_BASE_URL` /
+`PI_VISION_API_KEY` 环境变量 → `~/.config/pi-nerdfont-unescape/vision.json`
+→ 兜底默认（pi 自带凭证 + `glm-5.3-flash`）。任何 OpenAI 兼容端点均可，
+fork 请用前两级设置自己的模型。
 
 ## 设计史（浓缩）
 
