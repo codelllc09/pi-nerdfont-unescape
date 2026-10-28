@@ -13,7 +13,8 @@ tests/test-*.cjs        two regression suites (113 assertions)
 tests/mutation-audit.cjs  87 mutations; proves every assertion can fail
 tests/guard-layout.cjs file identity + build-portability guard
 tests/gen-review.cjs   generates review.html: every case with its expected value
-scripts/safe-run.sh    cgroup memory ceiling; all suites run through it
+scripts/safe-run.sh    cgroup memory ceiling; every test suite runs through it
+                       (the structure guard is millisecond-level and runs directly)
 scripts/tui-probe/     model-free TUI probes (see below)
 ```
 
@@ -34,7 +35,9 @@ Rules that keep the suite honest:
 - Tests build their own font fixtures, so results never depend on the fonts
   installed on the machine. A missing `python3` fails the suite loudly instead of
   skipping it.
-- `npm test` needs `python3` + fontTools (`pip install fonttools`).
+- `npm test` needs `python3` + fontTools (`pip install fonttools`), and a POSIX
+  shell — the suites are launched through `scripts/safe-run.sh`. On Windows run
+  them from Git Bash or WSL; the extension itself does not need a shell.
 - `npm run typecheck` runs `tsc --noEmit`. pi loads extensions through jiti, which
   transpiles without type checking, so this is the only thing that catches type
   errors before they ship. CI runs it; `npm test` does not (no TypeScript needed

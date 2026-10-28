@@ -80,5 +80,15 @@ check("lib: 导出 resolveEntry 供套件复用", /module\.exports\s*=\s*\{[^}]*
   fs.rmSync(fresh, { recursive: true, force: true });
 }
 
+// 6) 视觉验证脚本的默认提示词必须完整：它曾在一处编辑中被截断成从半句开始，
+//    模型于是跳过第 1 项（"该显示图标的地方确实是图标"）——最关键的判断。
+//    静态检查，因为它测的是随包发布的文本，不是扩展行为。
+{
+  const py = fs.readFileSync(path.join(DIR, "vision-verify.py"), "utf8");
+  const m = py.match(/DEFAULT_PROMPT = \(([\s\S]*?)\n\)/);
+  const body = m ? m[1] : "";
+  check("vision-verify 默认提示词完整（含 1) 与 2)）", /1\)[\s\S]*2\)/.test(body) && body.includes("豆腐块"));
+}
+
 console.log(fail ? `\n✗ 结构守卫失败 ${fail} 项` : "\n✓ 结构守卫通过（文件身份与结构完整）");
 process.exit(fail ? 1 : 0);

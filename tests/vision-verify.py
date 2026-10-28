@@ -41,7 +41,10 @@ import urllib.request
 
 DEFAULT_PROMPT = (
     # Default prompt intentionally Chinese: tuned for zh screenshots of this workflow.
-    "□U+XXXX 标记的行；2) 指出异常：豆腐块、意外空白、不该还原却被还原的"
+    # It must keep BOTH items: an earlier edit truncated item 1 and the model then
+    # skipped the main check (guard-layout asserts both are present).
+    "1) 确认该显示图标的位置确实显示为图标字形（不是豆腐块、不是空白、不是转义文本），"
+    "并列出所有出现 □U+XXXX 标记的行；2) 指出异常：豆腐块、意外空白、不该还原却被还原的"
     "位置、该显示图标却显示转义文本的位置、对齐错位。没有异常请明说。"
 )
 
@@ -117,6 +120,9 @@ def main():
         return 1
     png = sys.argv[1]
     prompt = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_PROMPT
+    if not os.path.isfile(png):
+        print(f"error: screenshot not found: {png}", file=sys.stderr)
+        return 1
     img = base64.b64encode(open(png, "rb").read()).decode()
     chain = candidate_chain()
     if not chain:
