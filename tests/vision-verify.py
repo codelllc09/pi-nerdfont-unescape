@@ -40,7 +40,7 @@ import sys
 import urllib.request
 
 DEFAULT_PROMPT = (
-    "终端 TUI 截图。请：1) 精确转录含图标、□、\\uXXXX 转义字面量、"
+    # Default prompt intentionally Chinese: tuned for zh screenshots of this workflow.
     "□U+XXXX 标记的行；2) 指出异常：豆腐块、意外空白、不该还原却被还原的"
     "位置、该显示图标却显示转义文本的位置、对齐错位。没有异常请明说。"
 )
@@ -54,7 +54,7 @@ def pi_files(rel):
 
 
 def env_overrides():
-    """部分覆盖合法：只设模型也生效，缺的件由兜底补齐（而非整体丢弃）。"""
+    """Partial overrides are legal: setting only the model works; missing keys come from the fallback."""
     return {k: v for k, v in {
         "model": os.environ.get("PI_VISION_MODEL"),
         "base_url": os.environ.get("PI_VISION_BASE_URL"),
@@ -69,14 +69,14 @@ def file_cfg():
     try:
         c = json.load(open(path))
     except (OSError, ValueError) as e:
-        print(f"警告: 配置文件 {path} 解析失败({e})，忽略之", file=sys.stderr)
+        print(f"warning: config file {path} failed to parse ({e}); ignoring it", file=sys.stderr)
         return None
-    # 部分配置合法：有的键就返回，缺的由 env/兜底补
+    # Partial configs are legal: return the keys present; env/fallback fills the rest
     return {k: v for k, v in ((k, c.get(k)) for k in ("model", "base_url", "api_key")) if v}
 
 
 def fallback_cfg():
-    """④ 本机兜底：pi 凭证 + coding 端点 + 廉价视觉模型。"""
+    """(3) Local fallback: Pi credentials + coding endpoint + a cheap vision model."""
     try:
         key = json.load(open(pi_files("auth.json")))["zai-coding-cn"]["key"]
     except (OSError, ValueError, KeyError):
@@ -85,13 +85,13 @@ def fallback_cfg():
 
 
 def candidate_chain():
-    """合并顺序：② file 先铺底，① env 后覆盖（env 胜出，与文档一致）；
-    部分覆盖合法（只设模型也生效）；本机无兜底凭证时，
-    env/file 拼齐三件套照样可用。纯兜底仅作拒图/空响应的第二候选。"""
+    """Merge order: (2) file lays the base, (1) env overrides (env wins, as documented);
+    partial overrides are legal; with no local fallback, env/file keys alone can
+    still form a complete triple. The pure fallback is only the reject/empty-response second candidate."""
     merged = {}
     merged.update(file_cfg() or {})
     merged.update(env_overrides())
-    # 部分覆盖：缺的键由兜底补齐（兜底不得反向覆盖 env/file）
+    # Partial override: missing keys come from the fallback (never the reverse)
     base = fallback_cfg()
     if base:
         for k, v in base.items():
@@ -102,8 +102,8 @@ def candidate_chain():
         chain.append(merged)
     if base and base.get("model") != merged.get("model"):
         chain.append(base)
-    # 机器第二兜底：flash 系 reasoning 间歇性耗尽 max_tokens（多轮实测），
-    # 同端点挂 4.6v 兜底避免单点
+    # Machine second candidate: flash-family reasoning intermittently exhausts
+    # max_tokens (observed across rounds) — same-endpoint 4.6v avoids a single point of failure
     if base:
         backup = dict(base, model="glm-4.6v")
         if backup["model"] != merged.get("model"):
@@ -120,15 +120,15 @@ def main():
     img = base64.b64encode(open(png, "rb").read()).decode()
     chain = candidate_chain()
     if not chain:
-        print("错误: 找不到任何可用的视觉模型配置（见文件头注释的 ①② 两级）", file=sys.stderr)
+        print("error: no usable vision model config (see levels 1-2 in the header)", file=sys.stderr)
         return 1
 
     c = None
     for cfg in chain:
-        print(f"[vision] 尝试 {cfg['model']} @ {cfg['base_url']}", file=sys.stderr)
+        print(f"[vision] trying {cfg['model']} @ {cfg['base_url']}", file=sys.stderr)
         body = json.dumps({
             "model": cfg["model"],
-            "max_tokens": 2000,  # flash 系会先花 token 于 reasoning，留足余量
+            "max_tokens": 2000,  # flash models burn tokens on reasoning first — leave headroom
             "messages": [{"role": "user", "content": [
                 {"type": "text", "text": prompt},
                 {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img}"}},
@@ -144,23 +144,23 @@ def main():
                 out = json.load(r)
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", "replace")
-            # 参数类拒绝（如 glm-5.3 不吃图）→ 降级下一候选，非静默
-            if e.code == 400 and ("image" in detail.lower() or "type" in detail.lower() or "参数" in detail):
-                print(f"[vision] {cfg['model']} 拒图，降级: {detail[:120]}", file=sys.stderr)
+            # Parameter-class rejection (e.g. glm-5.3 refusing images) → demote to the next candidate, never silent
+            if e.code == 400 and ("image" in detail.lower() or "type" in detail.lower() or "\u53c2\u6570" in detail):
+                print(f"[vision] {cfg['model']} rejected the image, demoting: {detail[:120]}", file=sys.stderr)
                 continue
-            print(f"错误: {cfg['model']} HTTP {e.code}: {detail[:300]}", file=sys.stderr)
+            print(f"error: {cfg['model']} HTTP {e.code}: {detail[:300]}", file=sys.stderr)
             return 1
         c = out["choices"][0]["message"].get("content") or ""
         if isinstance(c, list):
             c = "".join(x.get("text", "") for x in c if isinstance(x, dict))
         if not c.strip():
-            # 空内容多为 reasoning 耗尽 max_tokens——换下一候选而非静默
-            print(f"[vision] {cfg['model']} 返回空内容，降级", file=sys.stderr)
+            # Empty content usually means reasoning exhausted max_tokens — try the next candidate, not silence
+            print(f"[vision] {cfg['model']} returned empty content, demoting", file=sys.stderr)
             c = None
             continue
         break
     if not c or not c.strip():
-        print("错误: 链上全部候选失败（空内容或拒图）", file=sys.stderr)
+        print("error: every candidate on the chain failed (empty or image-rejected)", file=sys.stderr)
         return 1
     print(c.strip())
     return 0
