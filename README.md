@@ -80,6 +80,18 @@ npm run test:audit -- --list                      # names only
 All entry points are idempotent: temporary state lives under `/tmp`, keyed by
 pid or source hash, and is swept on the next run if a process was killed.
 
+### Resource guards (why `npm test` is wrapped)
+
+Every suite runs through `scripts/safe-run.sh`, which puts the workload in its
+own cgroup with a hard ceiling (`MemoryMax=2G`, `MemorySwapMax=512M`) and refuses
+to start when less than 2 GB is available. This is not ceremony: an earlier
+parallel audit on a 15.8 GB workstation that already had ~21 GB in swap hit the
+*kernel's global OOM*, which killed the browser and took the desktop session
+down with it. With a cgroup ceiling the kernel can only kill this workload, and
+the mutation audit now defaults to **one worker** (use `--jobs N` explicitly if
+you want parallelism). Temporary scopes disappear when the command exits, so an
+interrupted run leaves nothing behind.
+
 **Rendering correctness is ultimately judged by pixels**: unit tests can
 lie green (two documented ways in the suite header). After significant
 changes, send a real message exercising the new behavior, screenshot it,

@@ -272,7 +272,31 @@ function flag(name, fallback) {
   const k = argv.indexOf(`--${name}`);
   return k >= 0 && argv[k + 1] !== undefined ? argv[k + 1] : fallback;
 }
-const JOBS = Math.max(1, Math.min(16, Number(flag("jobs", Math.max(1, os.cpus().length - 1))) || 1));
+// ── Resource guard ────────────────────────────────────────────
+// A parallel audit once pushed a 15 GB workstation into global OOM and took
+// the desktop down with it (round 18 postmortem). Parallelism is now capped by
+// BOTH cpu count and available memory, children get a V8 heap cap, and every
+// child is killed on exit/interrupt so an aborted run leaves nothing behind.
+function memAvailableMB() {
+  try {
+    const m = /MemAvailable:\s+(\d+) kB/.exec(fs.readFileSync("/proc/meminfo", "utf8"));
+    return m ? Math.floor(Number(m[1]) / 1024) : null;
+  } catch {
+    return null;
+  }
+}
+const MEM_PER_JOB = 512; // MB: a node child + its python helper, measured generously
+const MEM_RESERVE = 2560; // MB kept free for the desktop/browser (the OOM victims)
+const cpuCap = Math.max(1, os.cpus().length - 1);
+const availMB = memAvailableMB();
+const memCap = availMB === null ? cpuCap : Math.max(1, Math.floor((availMB - MEM_RESERVE) / MEM_PER_JOB));
+// Default is deliberately ONE worker: the audit is a background verification,
+// not an interactive loop, and a single child keeps the footprint ~200-300 MB
+// (the OOM postmortem). --jobs opts into parallelism explicitly.
+const autoJobs = 1;
+const requested = flag("jobs", null);
+const JOBS = requested === null ? autoJobs : Math.max(1, Math.min(16, Number(requested) || 1));
+const HEAP_CAP = "--max-old-space-size=768";
 const onlyRe = flag("only", null) ? new RegExp(flag("only"), "i") : null;
 const fromIdx = Number(flag("from", "0")) || 0;
 if (argv.includes("--list")) {
@@ -336,13 +360,18 @@ function paths(worker) {
 
 function runSuiteAsync(id, full, extPath, cachePath, worker) {
   return new Promise((resolve) => {
-    const child = spawn("node", [SUITES[id]], {
+    const child = spawn(process.execPath, [HEAP_CAP, SUITES[id]], {
       env: { ...process.env, EXT_PATH: extPath, PI_NF_CMAP_CACHE: cachePath, ...(full ? {} : { SKIP_SLOW: "1" }) },
       stdio: ["ignore", "pipe", "pipe"],
+      detached: true, // own process group: kill(-pid) reaps python grandchildren too
     });
+    const live = new Set();
+    LIVE_CHILDREN.add(child);
+    child.on("close", () => LIVE_CHILDREN.delete(child));
     let out = "";
     child.stdout.on("data", (d) => { out += d; });
     child.stderr.on("data", (d) => { out += d; });
+    child.on("error", (e) => { out += `\nspawn error: ${e.message}\n`; });
     const timer = setTimeout(() => child.kill("SIGKILL"), 240000);
     child.on("close", (code) => {
       clearTimeout(timer);
@@ -360,6 +389,18 @@ function runSuiteAsync(id, full, extPath, cachePath, worker) {
   });
 }
 
+const LIVE_CHILDREN = new Set();
+function killChildren() {
+  for (const c of LIVE_CHILDREN) {
+    try { process.kill(-c.pid, "SIGKILL"); } catch { try { c.kill("SIGKILL"); } catch {} }
+  }
+  LIVE_CHILDREN.clear();
+}
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(sig, () => { killChildren(); fs.rmSync(AUDIT_DIR, { recursive: true, force: true }); process.exit(130); });
+}
+process.on("exit", killChildren);
+
 function fmtDur(ms) {
   const s = Math.round(ms / 1000);
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s`;
@@ -370,7 +411,8 @@ const warm = runSuiteAsync(1, false, SRC, path.join(AUDIT_DIR, `cmap-warm-${proc
 const warmR = await warm;
 const warmCache = path.join(AUDIT_DIR, `cmap-warm-${process.pid}.json`);
 if (warmR.crashed || warmR.failed.length || !fs.existsSync(warmCache)) {
-  console.error(`✗ 隔离 cmap 基线构建失败：${warmR.tail || warmR.failed.join(", ")}`);
+  console.error(`✗ 隔离 cmap 基线构建失败：${warmR.tail || warmR.failed.join(", ") || "(子进程无输出)"}`);
+  console.error("  提示：子进程可能被内存上限杀掉 —— 用 scripts/safe-run.sh 包裹，或调低 --jobs。");
   process.exit(1);
 }
 const auditCacheBaseline = fs.readFileSync(warmCache);
@@ -391,7 +433,23 @@ try {
 } catch {}
 
 const resumed = SELECTED.filter((m) => journal.entries[m.name]?.oldHash === sha(m.old).slice(0, 16)).length;
-console.log(`变异审计：${SELECTED.length}/${MUTATIONS.length} 条，并行 ${JOBS}（每条 = 完整套件子进程），锚点全量校验通过`);
+const MIN_AVAIL_MB = 2000;
+if (availMB !== null && availMB < MIN_AVAIL_MB && !argv.includes("--force")) {
+  console.error(
+    `拒绝启动：可用内存仅 ${availMB}MB（阈值 ${MIN_AVAIL_MB}MB）。\n` +
+    "关掉浏览器/其他应用后重试，或显式 --force。\n" +
+    "（2026-10-29：同样条件下并行的审计触发过全局 OOM，内核杀了 chrome，桌面重启。）",
+  );
+  process.exit(75);
+}
+
+const jobsWhy = requested === null
+  ? `CPU 上限 ${cpuCap}${availMB === null ? "" : `，可用内存 ${availMB}MB → 上限 ${memCap}`}`
+  : `--jobs 指定（CPU 上限 ${cpuCap}${availMB === null ? "" : `，可用内存 ${availMB}MB`}）`;
+console.log(`变异审计：${SELECTED.length}/${MUTATIONS.length} 条，并行 ${JOBS}（${jobsWhy}；子进程堆上限 384MB），锚点全量校验通过`);
+if (availMB !== null && availMB < MEM_RESERVE + MEM_PER_JOB * 2) {
+  console.log(`⚠ 可用内存仅 ${availMB}MB：单条串行运行，若仍卡顿请先关掉浏览器再跑`);
+}
 if (resumed) {
   console.log(`断点续跑：${resumed} 条已有结论（源码哈希 ${SRC_HASH.slice(0, 12)}，--fresh 可忽略日志重跑）`);
   console.log(`  剩余 ${SELECTED.length - resumed} 条`);

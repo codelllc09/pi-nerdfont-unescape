@@ -264,7 +264,10 @@ function cmapAsyncState(): CmapAsyncState {
 function processErrorSummary(err: Error | null, stderr: unknown): string {
   const tail = String(stderr ?? "").trim().split(/\r?\n/).filter(Boolean).slice(-2).join(" ");
   const raw = tail || err?.message || "unknown process error";
-  return raw.replace(/\s+/g, " ").slice(0, 240);
+  const text = raw.replace(/\s+/g, " ").slice(0, 240);
+  // ENOENT here always means the python3 executable itself is missing: say what
+  // to install instead of echoing a bare errno (round 18).
+  return /ENOENT/.test(text) ? `python3 not found (${text}) — install python3 + fontTools` : text;
 }
 
 function buildCmapCache(notify?: (msg: string, level: string) => void): void {
@@ -401,11 +404,16 @@ async function resolveNfMarkers(text: string, notify?: (msg: string, level: stri
   // Failures (null) are not cached across messages — after installing fonts
   // or a transient fault the next message retries; all uncached names go through ONE batched python call (linear latency otherwise)
   const uncached = [...wanted].filter((n) => cache.get(n) == null);
+  // "could not check" must never be reported as "no such name": python3 or the
+  // font chain may simply be unavailable (round 18). The resolver prints a line
+  // for every requested name, so empty output means it never ran.
+  let resolverUnavailable = false;
   if (uncached.length > 0) {
     const out = await new Promise<string>((resolve) => {
       execFile("python3", ["-c", NF_LOOKUP_PY, `resolve:${uncached.join(",")}`, "1"], { timeout: 20000, maxBuffer: 1 << 20 },
         (err, stdout) => resolve(err ? "" : String(stdout).trim()));
     });
+    if (out === "") resolverUnavailable = true;
     for (const line of out.split("\n")) {
       const m = line.match(/^([a-z0-9_.-]+) (~?[0-9a-f]+|\?)$/i); // ~hex = named but non-icon
       if (!m) continue;
@@ -423,13 +431,16 @@ async function resolveNfMarkers(text: string, notify?: (msg: string, level: stri
   }
   const unresolved: string[] = [];
   const nonIcon: string[] = [];
+  const unavailable: string[] = [];
   let outText = walkUnprotected(text, (seg) =>
     seg.replace(NF_MARKER, (whole, name: string) => {
       const k = name.toLowerCase();
       const raw = cache.get(k);
       const cp = raw ?? null;
       if (cp === null || cp === undefined) {
-        if (!unresolved.includes(k)) unresolved.push(k);
+        // Distinguish "we could not check" from "the name does not exist"
+        const bucket = resolverUnavailable ? unavailable : unresolved;
+        if (!bucket.includes(k)) bucket.push(k);
         return whole; // unresolved: keep the marker + name it in a warning, never silent
       }
       if (cp < 0) {
@@ -442,6 +453,12 @@ async function resolveNfMarkers(text: string, notify?: (msg: string, level: stri
       return cp <= 0xffff ? `\\u${cp.toString(16).padStart(4, "0")}` : `\\u{${cp.toString(16)}}`;
     }),
   );
+  if (unavailable.length > 0) {
+    notify?.(
+      `nerdfont-unescape: [[nf:${unavailable.join("]] [[nf:")}]] could not be resolved — font lookup unavailable (python3/fontTools missing, or the terminal font chain is unconfigured); markers kept verbatim`,
+      "warning",
+    );
+  }
   if (nonIcon.length > 0) {
     notify?.(
       `nerdfont-unescape: [[nf:...]] name exists but resolves outside the icon planes: ${nonIcon.join(", ")}; marker kept verbatim ([[nf:]] only carries Nerd Font icon codepoints)`,
@@ -1107,7 +1124,7 @@ export default function (pi: ExtensionAPI) {
           ["-c", NF_LOOKUP_PY, String(params.query), String(params.limit ?? 20)],
           { timeout: 20000, maxBuffer: 1 << 20, env: { ...process.env, NF_STARSHIP: STARSHIP_DEFAULTS_RAW } },
           (err, stdout, stderr) =>
-            resolve(err ? `ERROR: failed — ${String(stderr).trim().slice(-200) || err.code || "unknown"}` : stdout),
+            resolve(err ? `ERROR: failed — ${processErrorSummary(err, stderr)}` : stdout),
         );
       });
       return { content: [{ type: "text", text: out }], details: {} };
@@ -1171,7 +1188,7 @@ export default function (pi: ExtensionAPI) {
           ["-c", RENDER_PY, String(params.width ?? ""), params.frame ?? "none", params.writePath ?? ""],
           { timeout: 20000, maxBuffer: 1 << 22 },
           (err, stdout, stderr) =>
-            resolve(err ? `ERROR: failed — ${String(stderr).trim().slice(-200) || err.code || "unknown"}` : stdout),
+            resolve(err ? `ERROR: failed — ${processErrorSummary(err, stderr)}` : stdout),
         ) as any;
         child.stdin?.on("error", () => {});
         child.stdin?.end(params.content ?? "");
