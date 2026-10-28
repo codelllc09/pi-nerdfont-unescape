@@ -22,7 +22,7 @@
 		"typebox": "*"
 	},
 	"devDependencies": {
-		"@earendil-works/pi-coding-agent": "1.4.0"
+		"typescript": "^5.9.0"
 	},
 	"pi": {
 		"extensions": [
@@ -38,7 +38,8 @@
 		"prepublishOnly": "npm test",
 		"tui:probe": "scripts/tui-probe/run.sh",
 		"tui:check": "CHECK=1 scripts/tui-probe/run.sh",
-		"tui:pixel": "scripts/tui-probe/pixel.sh"
+		"tui:pixel": "scripts/tui-probe/pixel.sh",
+		"typecheck": "tsc -p tsconfig.json"
 	},
 	"files": [
 		"nerdfont-unescape.ts",

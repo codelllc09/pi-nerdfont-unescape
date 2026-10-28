@@ -87,6 +87,10 @@ function isInherentlyInvisible(cp: number): boolean {
 // to disk with a signature, reuse in-process.
 import * as os from "node:os";
 
+/** Notification levels pi accepts; using the union (not `string`) keeps
+ * ctx.ui.notify type-compatible with our callbacks (tsc TS2345 otherwise). */
+type NotifyLevel = "info" | "warning" | "error";
+
 const CMAP_CACHE =
   process.env.PI_NF_CMAP_CACHE ??
   (process.platform === "win32"
@@ -289,7 +293,7 @@ function processErrorSummary(err: Error | null, stderr: unknown): string {
   return /ENOENT/.test(text) ? `python3 not found (${text}) — install python3 + fontTools` : text;
 }
 
-function buildCmapCache(notify?: (msg: string, level: string) => void): void {
+function buildCmapCache(notify?: (msg: string, level: NotifyLevel) => void): void {
   const state = cmapAsyncState();
   if (state.building) return;
   state.building = true;
@@ -314,7 +318,7 @@ function buildCmapCache(notify?: (msg: string, level: string) => void): void {
     });
 }
 
-function checkCmapSignature(notify?: (msg: string, level: string) => void): void {
+function checkCmapSignature(notify?: (msg: string, level: NotifyLevel) => void): void {
   const state = cmapAsyncState();
   if (state.checking || state.building) return;
   state.checking = true;
@@ -333,7 +337,7 @@ function checkCmapSignature(notify?: (msg: string, level: string) => void): void
     });
 }
 
-function ensureCmapCache(notify?: (msg: string, level: string) => void): void {
+function ensureCmapCache(notify?: (msg: string, level: NotifyLevel) => void): void {
   const g = globalThis as any;
   if (g[CMAP_STORE]) {
     // Reload path: cmap is already global, but THIS instance's cmapSig is a
@@ -396,7 +400,7 @@ function walkUnprotected(text: string, fn: (seg: string) => string): string {
     .join("\n");
 }
 
-async function resolveNfMarkers(text: string, notify?: (msg: string, level: string) => void): Promise<string> {
+async function resolveNfMarkers(text: string, notify?: (msg: string, level: NotifyLevel) => void): Promise<string> {
   if (!/\[\[nf:/i.test(text)) return text; // fast path must match NF_MARKER's case-insensitivity (silent ignore = red-line violation)
   const g = globalThis as any;
   // Validate STRUCTURE, not existence: legacy builds left a bare Map

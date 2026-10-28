@@ -7,3 +7,6 @@ rel-out.txt
 
 # TUI probe artifacts
 scripts/tui-probe/out.png
+
+# dependencies (installed by npm install / CI)
+node_modules/

@@ -35,6 +35,10 @@ Rules that keep the suite honest:
   installed on the machine. A missing `python3` fails the suite loudly instead of
   skipping it.
 - `npm test` needs `python3` + fontTools (`pip install fonttools`).
+- `npm run typecheck` runs `tsc --noEmit`. pi loads extensions through jiti, which
+  transpiles without type checking, so this is the only thing that catches type
+  errors before they ship. CI runs it; `npm test` does not (no TypeScript needed
+  just to run the suites).
 - The audit journals verdicts to `/tmp/pi-mutation-journal-<source-hash>.json`;
   any source edit invalidates the journal, so a resumed run cannot report a stale
   green.
