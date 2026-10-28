@@ -1,0 +1,11 @@
+TUI 验收（假模型，内容固定）：
+图标 A \uE235 与 B \uE0B0，缺字 C \uE5EE。
+行内 `\uE235` 应保持字面；围栏：
+```ini
+icon = \uE235
+```
+> ```ini
+> quoted = \uE235
+> ```
+标记 [[nf:python]] 与 [[nf:git-branch]]，未知 [[nf:nope]]。
+字面 \\ue235 应显示单反斜杠。

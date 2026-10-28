@@ -80,6 +80,21 @@ npm run test:audit -- --list                      # names only
 All entry points are idempotent: temporary state lives under `/tmp`, keyed by
 pid or source hash, and is swept on the next run if a process was killed.
 
+### TUI acceptance without a model
+
+`scripts/tui-probe/run.sh` renders a fixed message in the **real** pi TUI and
+prints the screen: a local OpenAI-compatible server (`fake-openai-server.cjs`)
+answers with the canned text, `fake-provider.ts` registers it as a provider, and
+pi runs inside tmux so `tmux capture-pane` can read what the user would see.
+
+```bash
+scripts/tui-probe/run.sh            # print the rendered screen
+CHECK=1 scripts/tui-probe/run.sh    # assert the demo message's expectations
+```
+
+Note for anyone extending this: never redirect stdout inside the tmux command —
+pi detects a non-TTY and silently degrades to plain text.
+
 ### Resource guards (why `npm test` is wrapped)
 
 Every suite runs through `scripts/safe-run.sh`, which puts the workload in its

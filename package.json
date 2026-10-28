@@ -35,7 +35,9 @@
 		"test:audit:light": "scripts/safe-run.sh node tests/mutation-audit.cjs --jobs 1",
 		"test:raw": "node tests/test-nerdfont-unescape.cjs && node tests/test-tools.cjs",
 		"guard": "node tests/guard-layout.cjs",
-		"prepublishOnly": "npm test"
+		"prepublishOnly": "npm test",
+		"tui:probe": "scripts/tui-probe/run.sh",
+		"tui:check": "CHECK=1 scripts/tui-probe/run.sh"
 	},
 	"files": [
 		"nerdfont-unescape.ts",
