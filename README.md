@@ -23,8 +23,8 @@ both directions:
 |---|---|
 | Escape restoration | `\uXXXX` / `\u{xxxxx}` → real glyph, outside code spans |
 | Code-span protection | fenced blocks **and** inline spans (CommonMark equal-length delimiters, incl. double-backtick wrapping) keep escapes literal — copy-paste safe for config files |
-| Visible substitution | codepoints with **no renderable glyph** (noncharacters, Tags, unassigned BMP, or absent from your local fonts' cmap union) become visible `□U+FDD0` markers — never invisible |
-| Trace filling | structural leftovers of dropped chars (empty quote pairs, codepoint comments) get `□` in place, with a warning naming the lost regions |
+| Visible substitution | codepoints with **no renderable glyph** (noncharacters, Tags, unassigned BMP, absent from your local fonts' cmap union, or whenever the cmap itself is unavailable) become visible `□U+FDD0` markers — never invisible |
+| Evidence-only trace filling | when the text itself names a lost codepoint (Lua-style `-- U+E235` comments) a trailing `□` is appended; empty quote pairs are never touched (a legit `""` and a dropped char are bit-identical — undecidable, and we refuse to guess) |
 | Input auto-escaping | at-risk chars in **your outgoing messages** are auto-escaped (the channel strips them on input too) — the model actually receives what you pasted |
 | Stream drop detection | at-risk codepoints seen in `message_update` but missing from the final message are reported with codepoints |
 | Font ground truth | union of all installed fonts' cmaps, cached with signature-based invalidation; Linux / macOS / Windows paths |

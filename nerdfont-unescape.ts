@@ -13,10 +13,10 @@
 //   1. Escape restoration: turn \uXXXX / \u{xxxx} (ranges proven dropped)
 //      back into real characters (String.fromCodePoint, purely
 //      client-side — bytes never lost)
-//   2. Trace filling: a violation leaves no char but often leaves
-//      structure — empty quote pairs '' / `` `` , trailing codepoint
-//      comments — fill with □ (U+25A1) so the loss is visible at a
-//      glance; icon-context gating suppresses false positives
+//   2. Evidence-only trace filling: when the text itself names the lost
+//      codepoint (Lua-style "-- U+E235" comments), append □ (U+25A1) so the
+//      loss is visible; empty quote pairs are NOT touched — a legit "" and a
+//      dropped char are bit-identical and we refuse to guess
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -204,7 +204,7 @@ function buildCmapCache(notify?: (msg: string, level: string) => void): void {
       }
       // Failure (incl. missing fontTools): category fallback still works,
       const reason = processErrorSummary(err, stderr);
-      const msg = `nerdfont-unescape: cmap unavailable (${reason}) — renderability falls back to category checks; install python3 + fontTools to restore`;
+      const msg = `nerdfont-unescape: cmap unavailable (${reason}) — at-risk escapes will render as visible □U+XXXX markers (conservative: unknown font state counts as no glyph); install python3 + fontTools to restore real glyphs`;
       console.error(`[nerdfont-unescape] cmap build FAILED: ${reason}`);
       notify?.(msg, "warning");
     });
@@ -620,14 +620,16 @@ function tofuFill(text: string): { text: string; filled: number; cps: (number | 
   //     codepoint: fill a trailing box, but only OUTSIDE fences/inline code
   let filled = 0;
   const cps: (number | null)[] = [];
-  const LUALINE = /(--[ \t]*U\+[0-9A-Fa-f]{4,5})[ \t]*$/;
+  const LUALINE = /(--[ \t]*U\+[0-9A-Fa-f]{4,6})[ \t]*$/; // 4-6 hex (PUA-B needs 6)
   text = walkUnprotected(text, (seg) =>
     seg.replace(LUALINE, (m) => {
-      const hex = /U\+([0-9A-Fa-f]{4,5})/.exec(m);
+      const hex = /U\+([0-9A-Fa-f]{4,6})/.exec(m);
       const cp = hex ? parseInt(hex[1], 16) : null;
+      if (cp === null || cp > 0x10ffff) return m; // beyond the codespace: not our trace
+      if (!isAtRisk(cp)) return m; // e.g. U+0041 'A': a safe codepoint, nothing was dropped
       // Compliance check: the codepoint already present (e.g. a restored
       // escape) means nothing was lost — no fill
-      if (cp !== null && text.includes(String.fromCodePoint(cp))) return m;
+      if (text.includes(String.fromCodePoint(cp))) return m;
       filled++;
       cps.push(cp);
       return m + " " + TOFU;

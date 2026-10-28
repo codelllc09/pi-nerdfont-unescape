@@ -9,6 +9,15 @@
  */
 // 工具与 cmap 同源依赖：python3 + fontTools。缺失即失败——静默跳过等于假绿
 {
+  // 隔离缓存（与套件1同款）：绝不触碰用户生产缓存
+  const path = require("path");
+  const os = require("os");
+  const fs = require("fs");
+  const ownedCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-nf-suite2-"));
+  process.env.PI_NF_CMAP_CACHE = path.join(ownedCacheDir, "cmap.json");
+  if (ownedCacheDir) void ownedCacheDir;
+}
+{
   const { spawnSync } = require("child_process");
   const r = spawnSync("python3", ["-c", "import fontTools"], { encoding: "utf8" });
   if (r.status !== 0) {
@@ -37,7 +46,8 @@ run(async () => {
   // the OPTIMISTIC restore path with cmap undefined — the conservative
   // font-unknown rule (□U+XXXX) exposed it. Start + wait like suite1.
   await handlers["session_start"]?.({}, ctx);
-  for (let i = 0; i < 10 && !globalThis[Symbol.for("pi.nerdfontUnescape.cmap")]; i++) {
+  // build timeout is 120s — wait up to 150s (cold machines / CI)
+  for (let i = 0; i < 50 && !globalThis[Symbol.for("pi.nerdfontUnescape.cmap")]; i++) {
     await new Promise((r) => setTimeout(r, 3000));
   }
   console.log("── ⑨ nerdfont_lookup 工具");

@@ -80,8 +80,16 @@ const t = (name, ok, detail = "") => {
   t("cmap判定替换", a.includes("□U+E5EE"), JSON.stringify(a));
 
   console.log("── ④ 观测层（证据性补框 + 保守降级）");
-  a = await end("icon value = '' 和 \"\" 与 ` ` 保持原样");
-  t("空引号永不被改写", !a.includes("□"), JSON.stringify(a));
+  {
+    const noTouch = "icon value = '' 和 \"\" 与 ` ` 保持原样";
+    const before = notes.length;
+    a = await end(noTouch);
+    t("空引号逐字节不变+零通知", a === noTouch && notes.length === before, JSON.stringify(a));
+  }
+  a = await end("icon annotation: -- U+0041");
+  t("安全码位注释不补框", !a.includes("□"), JSON.stringify(a));
+  a = await end("icon lost: -- U+100000");
+  t("六位码位注释补框", a.includes("-- U+100000 □"), JSON.stringify(a));
   a = await end("icon lost: -- U+E235");
   t("Lua注释补框(证据性)", a.includes("-- U+E235 □"), JSON.stringify(a));
   // 输入不含该码位的其他形态——合规检查不能代偿，围栏保护独立受审
