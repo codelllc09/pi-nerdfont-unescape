@@ -43,7 +43,10 @@ pi install npm:pi-nerdfont-unescape
 
 ## Runtime & testing dependencies
 
-The extension has one small npm runtime dependency (`typebox`). The glyph
+The extension has **no runtime dependencies**. `typebox` (the schema library `pi`
+already provides) is declared as a *peer* dependency, so there is exactly one copy
+at runtime — a regular dependency installs a second instance and makes pi warn at
+startup. The glyph
 ground truth (cmap cache), `nerdfont_lookup`, and `render_preview` shell out
 to `python3` with [fontTools](https://fonttools.readthedocs.io/) — when
 missing, substitution degrades to category-only judgement **with a visible
@@ -155,6 +158,13 @@ point pi extensions have — which feeds **both display and storage**. The
 transcript therefore stores the restored characters. A render-boundary-only
 substitution (ASCII transcript + glyph at paint time) would require core
 support pi does not expose today.
+
+One consequence worth knowing: since the transcript is also the model's context,
+the model sees the *restored* characters in its own history. If it copies one
+verbatim instead of writing the escape form, the channel may still drop it — which
+is why user messages are escaped before sending and the protocol asks for escapes.
+Verified by reading a stored session: the restored glyph, the `□U+XXXX` marker and
+the literal escapes inside code all persist exactly as displayed.
 
 ## Design history (condensed)
 

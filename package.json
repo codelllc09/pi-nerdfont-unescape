@@ -52,5 +52,6 @@
 	],
 	"engines": {
 		"node": ">=22"
-	}
+	},
+	"author": "lcw"
 }

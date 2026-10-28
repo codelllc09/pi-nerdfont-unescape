@@ -38,7 +38,8 @@ pi install npm:pi-nerdfont-unescape
 
 ## 运行与测试依赖
 
-扩展有一个很小的 npm 运行时依赖（`typebox`）。字形 ground truth（cmap 缓存）、
+扩展**没有运行时依赖**。`typebox`（pi 本来就提供的 schema 库）声明为 *peer*
+依赖，保证运行时只有一份实例——写成普通依赖会装出第二份，pi 启动时就会告警。字形 ground truth（cmap 缓存）、
 `nerdfont_lookup` 与 `render_preview` 会调用 `python3` + [fontTools]——缺失时可渲染性判定退化为
 类别判断，**可见告警**，绝不静默。测试套件同样依赖。Windows 下未必有名为
 `python3` 的命令，需自行暴露（如 `py -3` 做壳）。
@@ -80,6 +81,41 @@ npm run test:audit -- --list                      # 只列变异名
 
 所有入口均幂等：临时状态在 `/tmp`，按 pid 或源码哈希命名，进程被 kill 后下次运行自动清扫。
 
+### 无模型 TUI 验收
+
+`scripts/tui-probe/run.sh` 把固定消息渲染进**真实**的 pi TUI 并打印屏幕：
+本地 OpenAI 兼容服务（`fake-openai-server.cjs`）回固定文本，`fake-provider.ts`
+把它注册成一个 provider，pi 跑在 tmux 里，于是 `tmux capture-pane` 能读到
+用户实际看到的画面。
+
+```bash
+scripts/tui-probe/run.sh            # 打印渲染结果
+CHECK=1 scripts/tui-probe/run.sh    # 对演示消息做断言
+```
+
+给要扩展它的人：**绝不要在 tmux 命令里重定向 stdout**——pi 检测到非 TTY 会
+静默降级成纯文本。
+
+`scripts/tui-probe/pixel.sh` 再深一层，抓的是**像素**：GNOME Wayland 没有可脚本化
+的静默截图（Shell 的 D-Bus 方法自 43 起 AccessDenied，portal 每次弹框），Weston 自带
+的 screenshooter 也被拒（`unauthorized`），于是改用 Xvfb——一块虚拟 X 屏幕——在里面
+启动你同款的 WezTerm（软件前端、同一份配置与字体），用同一个假模型驱动，再用
+ImageMagick 抓屏。真实桌面完全不受影响。
+
+```bash
+npm run tui:pixel            # 写出 scripts/tui-probe/out.png
+DROP_PUA=1 scripts/tui-probe/run.sh scripts/tui-probe/message-drop.txt
+```
+
+第二条命令复现的是**起源缺陷**：`DROP_PUA=1` 让假通道表现得像真实的模型输出管道——
+BMP Private Use 字符被静默删除。实测行为：协议写法（`\uE235`）穿过通道并被还原；
+裸 PUA 字符消失且扩展读不到任何线索（已记录的盲区）；而自带码位线索的行
+（`icon lost -- U+E0B0`）会被补上可见的 `□`。
+
+两个踩过的坑：必须 `env -u WAYLAND_DISPLAY`（否则 WezTerm 会开到真实桌面而不是虚拟
+X 屏幕）；必须用 `import -window root -screen`（裸 `-window root` 读的是 root 窗口，
+子窗口位置是黑的）。
+
 ### 资源护栏（`npm test` 为什么要包一层）
 
 所有套件都经 `scripts/safe-run.sh` 运行：工作负载被放进独立 cgroup，硬上限
@@ -94,6 +130,11 @@ npm run test:audit -- --list                      # 只列变异名
 `[[nf:]]` 在 `message_end` 解析——这是 pi 扩展唯一的拦截点，而它同时供给
 **显示与存储**。因此会话存档里保存的是还原后的真字符。「存档恒 ASCII、
 仅在绘制边界转字形」需要 pi 核心支持，当前扩展 API 没有这个钩子。
+
+一个值得知道的后果：存档同时是模型的上下文，所以模型在自己的历史里看到的是
+**还原后的字符**。若它照抄而不是写转义形式，通道仍可能把这个字符吞掉——这正是
+用户消息要在发送前转义、协议要求模型写转义的原因。已通过读取真实会话文件验证：
+还原后的字形、`□U+XXXX` 标记、代码区内的字面转义都与显示完全一致地持久化。
 
 ## 设计史（浓缩）
 

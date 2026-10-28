@@ -51,5 +51,17 @@ for (const [name, text] of Object.entries({ suite, tools, audit, review })) {
   check(`${name}: 单个 shebang 且在首行`, shebangs === 1 && lines[0].startsWith("#!"), `shebangs=${shebangs}`);
 }
 
+// 4) 测试基建自身的可移植性（终极 review 判例 2026-10-29）
+//    这两处缺陷在发布前真实存在过：硬编码 "<pi>/node_modules/jiti/..." 在
+//    `npm install` 的提升布局下直接崩；把官方配置变量 PI_CODING_AGENT_DIR 当
+//    安装目录用会让任何按文档设置它的用户跑不了测试。断言看**代码**，注释里
+//    提到这些名字是允许的（第一版守卫被自己的注释绊倒——陷阱 #8）。
+//    自证方式：复制 tests/ 到临时目录、注入缺陷，用 GUARD_DIR 指向副本，必须变红。
+const libCode = T("lib.cjs").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+check("lib: 依赖经 Node 解析而非硬编码嵌套路径", !/path\.join\(\s*D\s*,\s*"node_modules\//.test(libCode));
+check("lib: 安装目录只认 PI_NF_PI_ROOT（不劫持官方变量）",
+  libCode.includes("PI_NF_PI_ROOT") && !libCode.includes("PI_CODING_AGENT_DIR"));
+check("lib: 导出 resolveEntry 供套件复用", /module\.exports\s*=\s*\{[^}]*resolveEntry/.test(libCode));
+
 console.log(fail ? `\n✗ 结构守卫失败 ${fail} 项` : "\n✓ 结构守卫通过（文件身份与结构完整）");
 process.exit(fail ? 1 : 0);
