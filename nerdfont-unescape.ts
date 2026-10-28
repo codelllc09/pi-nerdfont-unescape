@@ -23,6 +23,8 @@ import { Type } from "typebox";
 import { execFile } from "node:child_process";
 
 const TOFU = "\u25A1"; // □ missing-glyph box
+const visibleMarker = (cp: number): string =>
+  `${TOFU}U+${cp.toString(16).toUpperCase().padStart(4, "0")}`;
 
 // BMP assigned-range table, generated from local Python unicodedata
 // (Unicode 16.0.0). Unassigned BMP codepoints are dropped by the channel
@@ -60,19 +62,28 @@ function isAtRisk(cp: number): boolean {
 
 /** Inherently invisible: no font may ever assign glyphs here (Unicode
  * forbids it), so restoring would CREATE a silent failure — substitute a visible □U+XXXX marker */
+/** Noncharacters: Unicode forbids glyphs for these on every plane */
+function isNoncharacter(cp: number): boolean {
+  return (cp >= 0xfdd0 && cp <= 0xfdef) || (cp & 0xfffe) === 0xfffe;
+}
+
 function isInherentlyInvisible(cp: number): boolean {
   return (
-    (cp >= 0xfdd0 && cp <= 0xfdef) || // noncharacters
-    (cp & 0xfffe) === 0xfffe || // U+xFFFE / U+FFFF on any plane
+    isNoncharacter(cp) ||
     (cp >= 0xe0000 && cp <= 0xe007f) || // Tags (format chars, invisible by design)
     (cp <= 0xffff && !isAssignedBmp(cp)) // unassigned BMP (no glyph anywhere; may render blank)
   );
 }
 
 // ── Local font glyph ground truth ──────────────────────────────
-// Category checks only cover "no font could ever have a glyph"; for
-// maybe-glyph codepoints (PUA etc.) the union of ALL local font cmaps is
-// the authority (the terminal fallback chain lives inside this union). Scan once, cache to disk, reuse in-process.
+// Category checks only cover "no font could ever have a glyph". For
+// maybe-glyph codepoints (PUA etc.) the authority is the ACTIVE terminal
+// font/fallback chain — never the union of every installed font, which would
+// claim glyphs the terminal cannot reach (review round 16). The chain comes
+// from PI_NF_FONT_PATHS (explicit, cross-platform) or, on Linux, the ordered
+// `fc-match -s monospace` list; with neither, the scan refuses to run and the
+// decision stays conservative (□U+XXXX) instead of guessing. Scan once, cache
+// to disk with a signature, reuse in-process.
 import * as os from "node:os";
 
 const CMAP_CACHE =
@@ -89,67 +100,112 @@ const CMAP_ASYNC_STATE = Symbol.for("pi.nerdfontUnescape.cmapAsyncState");
 type Ranges = Array<[number, number]>;
 
 const CMAP_BUILD_PY = `
-import glob, json, os, sys, tempfile
-fonts = []
-import sys as _sys
-if _sys.platform == "win32":
-    for root in (os.environ.get("LOCALAPPDATA"), os.environ.get("WINDIR")):
-        if root:
-            fonts += glob.glob(os.path.join(root, "Fonts", "*"), recursive=True)
-elif _sys.platform == "darwin":
-    for pat in ("/System/Library/Fonts/**/*", "/Library/Fonts/**/*",
-                os.path.expanduser("~/Library/Fonts/**/*")):
-        fonts += glob.glob(pat, recursive=True)
-else:
-    for pat in ("/usr/share/fonts/**/*.tt[fc]", "/usr/share/fonts/**/*.otf",
-                "/usr/local/share/fonts/**/*.tt[fc]", "/usr/local/share/fonts/**/*.otf",
-                os.path.expanduser("~/.local/share/fonts/**/*.tt[fc]"),
-                os.path.expanduser("~/.local/share/fonts/**/*.otf"),
-                os.path.expanduser("~/.fonts/**/*.tt[fc]")):
-        fonts += glob.glob(pat, recursive=True)
-fonts = [f for f in fonts if f.lower().endswith((".ttf", ".ttc", ".otf"))]
-fonts = sorted(set(fonts))
+import glob, json, os, shutil, subprocess, sys, tempfile
+
+def font_files(root):
+    root = os.path.abspath(os.path.expanduser(root))
+    if os.path.isdir(root):
+        return glob.glob(os.path.join(root, "**", "*"), recursive=True)
+    return [root]
+
+def discover_fonts():
+    # PI_NF_FONT_PATHS is the authoritative terminal font/fallback list. A
+    # directory is expanded recursively; entries use the platform path separator.
+    explicit = os.environ.get("PI_NF_FONT_PATHS", "").strip()
+    if explicit:
+        found = []
+        for item in explicit.split(os.pathsep):
+            if item.strip():
+                found += font_files(item.strip())
+        return found, "explicit"
+    # On Linux, fontconfig's ordered monospace fallback chain is materially
+    # closer to what a terminal can render than the union of every installed
+    # font. Other platforms cannot expose the active terminal font reliably;
+    # require an explicit list instead of claiming false-positive support.
+    if sys.platform.startswith("linux") and shutil.which("fc-match"):
+        try:
+            out = subprocess.check_output(
+                ["fc-match", "-s", "--format=%{file}\\n", "monospace"],
+                text=True, timeout=15)
+            return [p for p in out.splitlines() if p], "fontconfig-monospace"
+        except Exception as e:
+            print("fontconfig lookup failed: %s" % e, file=sys.stderr)
+    return [], "unconfigured"
+
+fonts, source = discover_fonts()
+fonts = sorted(set(f for f in fonts if os.path.isfile(f) and f.lower().endswith((".ttf", ".ttc", ".otf"))))
+if not fonts:
+    print("active terminal font chain unknown; set PI_NF_FONT_PATHS to the terminal font and fallback files", file=sys.stderr)
+    sys.exit(4)
+
+def sig(files):
+    import hashlib
+    h = hashlib.sha256()
+    for p in files:
+        try:
+            st = os.stat(p)
+            h.update(("%s:%d:%d\\n" % (p, st.st_size, st.st_mtime_ns)).encode())
+        except OSError:
+            pass
+    return h.hexdigest()
+
+# Signature checks must not parse every cmap. This is the cheap cache path.
+if len(sys.argv) > 2 and sys.argv[2] == "sig":
+    print(sig(fonts)); sys.exit(0)
+
 cps = set()
-if fonts:
-    try:
-        from fontTools.ttLib import TTFont
-        for p in fonts:
-            try:
-                cps |= set(TTFont(p, fontNumber=0).getBestCmap().keys())
-            except Exception:
-                pass
-    except ImportError:
-        sys.exit(3)  # fontTools missing: stay unknown, write no cache
+try:
+    from fontTools.ttLib import TTCollection, TTFont
+    for p in fonts:
+        try:
+            faces = TTCollection(p, lazy=True).fonts if p.lower().endswith(".ttc") else [TTFont(p, lazy=True)]
+            for face in faces:
+                cmap = face.getBestCmap() or {}
+                cps.update(cmap.keys())
+                face.close()
+        except Exception as e:
+            print("font skipped %s: %s" % (p, e), file=sys.stderr)
+except ImportError:
+    sys.exit(3)  # fontTools missing: stay unknown, write no cache
 rs, s, prev = [], None, None
 for cp in sorted(cps):
     if s is None: s = prev = cp
     elif cp == prev + 1: prev = cp
     else: rs.append([s, prev]); s = prev = cp
 if s is not None: rs.append([s, prev])
-def sig(files):
-    import hashlib
-    h = hashlib.md5()
-    for p in files:
-        try: h.update(("%s:%d\\n" % (p, os.path.getmtime(p))).encode())
-        except OSError: pass
-    return h.hexdigest()
-if len(sys.argv) > 2 and sys.argv[2] == "sig":
-    print(sig(fonts)); sys.exit(0)
 os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True)
-tmp = tempfile.mktemp(dir=os.path.dirname(sys.argv[1]))
-data = json.dumps({"fonts": len(fonts), "ranges": rs, "sig": sig(fonts)})
-open(tmp, "w").write(data)
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(sys.argv[1]))
+data = json.dumps({"schema": 2, "fonts": len(fonts), "ranges": rs, "sig": sig(fonts), "source": source})
+with os.fdopen(fd, "w") as out:
+    out.write(data)
 os.replace(tmp, sys.argv[1])
-print("cmap cache: %d fonts, %d ranges" % (len(fonts), len(rs)))
+print("cmap cache: %d terminal-chain fonts, %d ranges (%s)" % (len(fonts), len(rs), source))
 `;
+
+function validRanges(value: unknown): value is Ranges {
+  if (!Array.isArray(value)) return false;
+  let previousEnd = -1;
+  for (const item of value) {
+    if (
+      !Array.isArray(item) || item.length !== 2 ||
+      !Number.isInteger(item[0]) || !Number.isInteger(item[1]) ||
+      item[0] < 0 || item[0] > item[1] || item[1] > 0x10ffff ||
+      item[0] <= previousEnd
+    ) return false;
+    previousEnd = item[1];
+  }
+  return true;
+}
 
 function inRanges(rs: Ranges, cp: number): boolean {
   let lo = 0;
   let hi = rs.length - 1;
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;
-    if (cp < rs[mid][0]) hi = mid - 1;
-    else if (cp > rs[mid][1]) lo = mid + 1;
+    const range = rs[mid];
+    if (!Array.isArray(range) || range.length !== 2) return false;
+    if (cp < range[0]) hi = mid - 1;
+    else if (cp > range[1]) lo = mid + 1;
     else return true;
   }
   return false;
@@ -161,7 +217,7 @@ function inRanges(rs: Ranges, cp: number): boolean {
 function loadCmapCache(): boolean {
   try {
     const data = JSON.parse(require("node:fs").readFileSync(CMAP_CACHE, "utf8"));
-    if (!Array.isArray(data.ranges) || typeof data.sig !== "string") return false;
+    if (data.schema !== 2 || !validRanges(data.ranges) || typeof data.sig !== "string" || data.sig.length === 0) return false;
     (globalThis as any)[CMAP_STORE] = data.ranges as Ranges;
     cmapSig = data.sig;
     (globalThis as any)[CMAP_SIG] = cmapSig; // mirror globally: NF-cache invalidation basis
@@ -206,7 +262,10 @@ function buildCmapCache(notify?: (msg: string, level: string) => void): void {
       // still substitute visibly; everything else degrades conservatively to
       // □U+XXXX — and the degrade must leave a trace (red line):
       const reason = processErrorSummary(err, stderr);
-      const msg = `nerdfont-unescape: cmap unavailable (${reason}) — at-risk escapes will render as visible □U+XXXX markers (conservative: unknown font state counts as no glyph); install python3 + fontTools to restore real glyphs`;
+      const advice = reason.includes("PI_NF_FONT_PATHS")
+        ? "set PI_NF_FONT_PATHS to the active terminal font and fallback files"
+        : "install python3 + fontTools and verify the active terminal font configuration";
+      const msg = `nerdfont-unescape: cmap unavailable (${reason}) — at-risk escapes will render as visible □U+XXXX markers (conservative: unknown font state counts as no glyph); ${advice}`;
       console.error(`[nerdfont-unescape] cmap build FAILED: ${reason}`);
       notify?.(msg, "warning");
     });
@@ -327,24 +386,47 @@ async function resolveNfMarkers(text: string, notify?: (msg: string, level: stri
         (err, stdout) => resolve(err ? "" : String(stdout).trim()));
     });
     for (const line of out.split("\n")) {
-      const m = line.match(/^([a-z0-9_.-]+) ([0-9a-f]+|\?)$/i);
+      const m = line.match(/^([a-z0-9_.-]+) (~?[0-9a-f]+|\?)$/i); // ~hex = named but non-icon
       if (!m) continue;
-      cache.set(m[1].toLowerCase(), m[2] === "?" ? null : parseInt(m[2], 16));
+      // "~hex" = the name exists but resolves to a non-icon codepoint. Cache it
+      // as a negative number: still a cached answer (no repeat python call),
+      // but distinguishable from "unknown name" so the warning can be truthful.
+      const nonIcon = m[2].startsWith("~");
+      const cp = m[2] === "?" ? null : parseInt(m[2].replace("~", ""), 16);
+      // [[nf:]] is an icon protocol: only PUA codepoints may land in the text.
+      // Anything else would become a literal \uXXXX that the restore pipeline
+      // intentionally leaves alone (silent failure).
+      cache.set(m[1].toLowerCase(), cp === null ? null : isAtRisk(cp) ? cp : -cp);
     }
     for (const n of uncached) if (!cache.has(n)) cache.set(n, null);
   }
   const unresolved: string[] = [];
+  const nonIcon: string[] = [];
   let outText = walkUnprotected(text, (seg) =>
     seg.replace(NF_MARKER, (whole, name: string) => {
       const k = name.toLowerCase();
-      const cp = cache.get(k) ?? null;
+      const raw = cache.get(k);
+      const cp = raw ?? null;
       if (cp === null || cp === undefined) {
         if (!unresolved.includes(k)) unresolved.push(k);
         return whole; // unresolved: keep the marker + name it in a warning, never silent
       }
+      if (cp < 0) {
+        // Named glyph exists, but outside the icon planes: keep the marker and
+        // say exactly why (NOT "no such name" — that would be a lie)
+        const tag = `${k} (U+${(-cp).toString(16).toUpperCase().padStart(4, "0")})`;
+        if (!nonIcon.includes(tag)) nonIcon.push(tag);
+        return whole;
+      }
       return cp <= 0xffff ? `\\u${cp.toString(16).padStart(4, "0")}` : `\\u{${cp.toString(16)}}`;
     }),
   );
+  if (nonIcon.length > 0) {
+    notify?.(
+      `nerdfont-unescape: [[nf:...]] name exists but resolves outside the icon planes: ${nonIcon.join(", ")}; marker kept verbatim ([[nf:]] only carries Nerd Font icon codepoints)`,
+      "warning",
+    );
+  }
   if (unresolved.length > 0) {
     notify?.(`nerdfont-unescape: [[nf:${unresolved.join("]] [[nf:")}]] — no such name in local fonts; marker kept verbatim (use nerdfont_lookup to find valid names)`, "warning");
   }
@@ -362,8 +444,6 @@ function unescapeAtRisk(text: string): {
   const cps: number[] = [];
   const substituted: number[] = [];
   let hatched = 0;
-  const visibleTag = (cp: number) =>
-    `${TOFU}U+${cp.toString(16).toUpperCase().padStart(4, "0")}`;
   const cmap = (globalThis as any)[CMAP_STORE] as Ranges | undefined;
   // Single-pass alternation: branch A = double backslash (hatch, literalize),
   // branch B = single backslash (restore/substitute). Double tried first per
@@ -383,7 +463,7 @@ function unescapeAtRisk(text: string): {
         const notInFonts = cmap === undefined || !inRanges(cmap, cp);
         if (isInherentlyInvisible(cp) || notInFonts) {
           substituted.push(cp);
-          return visibleTag(cp); // invisible or no local glyph: visible marker, refuse silent failure
+          return visibleMarker(cp); // invisible or no local glyph: visible marker, refuse silent failure
         }
         cps.push(cp);
         return String.fromCodePoint(cp);
@@ -547,8 +627,7 @@ const REGIONS: Region[] = [
 ];
 
 function regionName(cp: number): string {
-  if ((cp >= 0xfdd0 && cp <= 0xfdef) || (cp & 0xfffe) === 0xfffe) return "Unicode noncharacters";
-  if ((cp >= 0xfdd0 && cp <= 0xfdef) || (cp & 0xfffe) === 0xfffe) return "Unicode noncharacters";
+  if (isNoncharacter(cp)) return "Unicode noncharacters";
   for (const r of REGIONS) {
     if (cp >= r.lo && cp <= r.hi) return r.name;
   }
@@ -639,7 +718,7 @@ function tofuFill(text: string): { text: string; filled: number; cps: number[] }
       // state was unknown/missing; that is not a model drop and must not be
       // filled or reported twice (review round 12). Searching the whole
       // message, round 11 taught us, silences genuine traces elsewhere.
-      const marker = `${TOFU}U+${cp.toString(16).toUpperCase().padStart(4, "0")}`;
+      const marker = visibleMarker(cp);
       if (seg.includes(String.fromCodePoint(cp)) || seg.includes(marker)) return m;
       filled++;
       cps.push(cp);
@@ -659,32 +738,56 @@ const STARSHIP_DEFAULTS_RAW = "aws.symbol=2601,fe0f|azure.symbol=f0805|battery.f
 
 // Local Nerd Font glyph + starship default lookup (no backslashes/backticks)
 const NF_LOOKUP_PY = `
-import sys, os, glob
+import sys, os, glob, shutil, subprocess
 query = sys.argv[1].strip()
-limit = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2].isdigit() else 20
-fonts = []
-import sys as _sys
-if _sys.platform == "win32":
-    for root in (os.environ.get("LOCALAPPDATA"), os.environ.get("WINDIR")):
-        if root:
-            fonts += glob.glob(os.path.join(root, "Fonts", "*"), recursive=True)
-elif _sys.platform == "darwin":
-    for pat in ("/System/Library/Fonts/**/*.tt[fc]", "/Library/Fonts/**/*.tt[fc]",
-                os.path.expanduser("~/Library/Fonts/**/*.tt[fc]")):
-        fonts += glob.glob(pat, recursive=True)
-else:
-    for pat in ("/usr/share/fonts/**/*.tt[fc]", "/usr/local/share/fonts/**/*.tt[fc]",
-                os.path.expanduser("~/.local/share/fonts/**/*.tt[fc]"), os.path.expanduser("~/.fonts/**/*.tt[fc]")):
-        fonts += glob.glob(pat, recursive=True)
-fonts = sorted(set(f for f in fonts if "nerd" in os.path.basename(f).lower()))
-names = {}
+limit = max(1, min(100, int(sys.argv[2]))) if len(sys.argv) > 2 and sys.argv[2].isdigit() else 20
+
+def font_files(root):
+    root = os.path.abspath(os.path.expanduser(root))
+    if os.path.isdir(root):
+        return glob.glob(os.path.join(root, "**", "*"), recursive=True)
+    return [root]
+
+def discover_fonts():
+    explicit = os.environ.get("PI_NF_FONT_PATHS", "").strip()
+    if explicit:
+        found = []
+        for item in explicit.split(os.pathsep):
+            if item.strip():
+                found += font_files(item.strip())
+        return found, "explicit"
+    if sys.platform.startswith("linux") and shutil.which("fc-match"):
+        try:
+            out = subprocess.check_output(
+                ["fc-match", "-s", "--format=%{file}\\n", "monospace"],
+                text=True, timeout=15)
+            return [p for p in out.splitlines() if p], "fontconfig-monospace"
+        except Exception:
+            pass
+    return [], "unconfigured"
+
+fonts, font_source = discover_fonts()
+fonts = sorted(set(f for f in fonts if os.path.isfile(f) and f.lower().endswith((".ttf", ".ttc", ".otf"))))
+all_names = {}
+icons = []
+
+def icon_cp(cp):
+    return 0xE000 <= cp <= 0xF8FF or 0xF0000 <= cp <= 0xFFFFD or 0x100000 <= cp <= 0x10FFFD
+
 if fonts:
     try:
-        from fontTools.ttLib import TTFont
+        from fontTools.ttLib import TTCollection, TTFont
+        seen_icons = set()
         for path in fonts:
             try:
-                for cp, nm in TTFont(path, fontNumber=0).getBestCmap().items():
-                    names.setdefault(cp, nm)
+                faces = TTCollection(path, lazy=True).fonts if path.lower().endswith(".ttc") else [TTFont(path, lazy=True)]
+                for face in faces:
+                    for cp, nm in (face.getBestCmap() or {}).items():
+                        all_names.setdefault(cp, set()).add(nm)
+                        if icon_cp(cp) and (cp, nm) not in seen_icons:
+                            icons.append((cp, nm))
+                            seen_icons.add((cp, nm))
+                    face.close()
             except Exception:
                 pass
     except ImportError:
@@ -693,6 +796,22 @@ bs = chr(92)
 def esc(cp):
     return bs + "u%04x" % cp if cp <= 0xFFFF else bs + "u{%x}" % cp
 q = query.lower()
+# One family ranking for every path (starship rows, name_for, keyword rows).
+# Prefix match after stripping a leading "nf-" — substring matching would rank
+# a name like "nf-md-dev-python" by whichever family appears first AND silently
+# disagreed with the second copy that used to shadow this one (review round 16).
+FAM = ("pl", "linux", "fae", "fa", "oct", "md", "seti", "dev", "cod", "custom", "ie", "weather")
+def famrank(nm):
+    n = nm.lower()
+    if n.startswith("nf-"):
+        n = n[3:]
+    for i, p in enumerate(FAM):
+        if n.startswith(p + "-"):
+            return i
+    return len(FAM)
+def name_for(cp):
+    vals = all_names.get(cp) or []
+    return min(vals, key=lambda nm: (famrank(nm), nm)) if vals else None
 
 # starship defaults mode: query is starship / starship <module>
 if q == "starship" or q.startswith("starship:") or q.startswith("starship "):
@@ -717,7 +836,7 @@ if q == "starship" or q.startswith("starship:") or q.startswith("starship "):
             if not h:
                 continue
             cp = int(h, 16)
-            parts.append("U+%04X %s %s" % (cp, esc(cp), names.get(cp) or "(no glyph in font)"))
+            parts.append("U+%04X %s %s" % (cp, esc(cp), name_for(cp) or "(no glyph in terminal font chain)"))
         print("%-28s %s" % (k, "  ".join(parts)))
         shown += 1
     if not ents:
@@ -725,20 +844,13 @@ if q == "starship" or q.startswith("starship:") or q.startswith("starship "):
     sys.exit(0)
 
 if not fonts:
-    print("No Nerd Font files found under /usr/share/fonts or ~/.local/share/fonts")
+    print("No active terminal font chain found; set PI_NF_FONT_PATHS to the terminal font and fallback files")
     sys.exit(0)
-if not names:
+if not all_names:
     print("fontTools not installed (pip3 install fonttools)")
     sys.exit(0)
 # resolve mode: the [[nf:name]] resolution end. Comma-separated names; hex or ? per name
 if q.startswith("resolve:"):
-    PRI = ("pl", "linux", "fae", "fa", "oct", "md", "seti", "dev", "cod", "custom", "ie", "weather")
-    def famrank(nm):
-        l = nm.lower()
-        for i, p in enumerate(PRI):
-            if p + "-" in l:
-                return i
-        return len(PRI)
     # Stable semantic aliases: common human/model names → font-internal names (alias → exact → substring)
     ALIAS = {"git-branch": "branch", "node-js": "nodejs", "node.js": "nodejs", "macos": "apple"}
     for name in q[8:].split(","):
@@ -746,11 +858,20 @@ if q.startswith("resolve:"):
         if not name:
             continue
         target = ALIAS.get(name, name)
-        cands = [(famrank(nm), cp) for cp, nm in names.items() if nm.lower() == target]
+        cands = [(famrank(nm), cp) for cp, nm in icons if nm.lower() == target]
         if not cands:
-            cands = [(famrank(nm), cp) for cp, nm in names.items() if target in nm.lower()]
+            cands = [(famrank(nm), cp) for cp, nm in icons if target in nm.lower()]
         if cands:
             print("%s %x" % (name, min(cands)[1]))
+            continue
+        # The name may exist in the font chain as an ordinary (non-PUA) glyph.
+        # Reporting "no such name" there would be false; report it precisely so
+        # the client can say "resolves to U+XXXX, not an icon codepoint".
+        plain = [(famrank(nm), cp) for cp, vals in all_names.items() for nm in vals if nm.lower() == target]
+        if not plain:
+            plain = [(famrank(nm), cp) for cp, vals in all_names.items() for nm in vals if target in nm.lower()]
+        if plain:
+            print("%s ~%x" % (name, min(plain)[1]))
         else:
             print("%s ?" % name)
     sys.exit(0)
@@ -758,7 +879,8 @@ direct = None
 if q.startswith("u+") and len(q) in (6, 7, 8) and all(c in "0123456789abcdef" for c in q[2:]):
     direct = int(q[2:], 16)
 rows, seen = [], set()
-for cp, name in names.items():
+source_rows = ((cp, nm) for cp, vals in all_names.items() for nm in vals) if direct is not None else iter(icons)
+for cp, name in source_rows:
     if (cp, name) in seen:
         continue
     seen.add((cp, name))
@@ -768,17 +890,11 @@ for cp, name in names.items():
     elif q in name.lower():
         rows.append((cp, name))
 
-# Family priority: terminal-ecosystem families first (starship/oh-my-zsh defaults); ascending codepoint within a family
-FAM = ("pl-", "linux-", "fae-", "fa-", "oct-", "md-", "custom-", "seti-", "dev-", "cod-")
-def famrank(name):
-    for i, p in enumerate(FAM):
-        if name.startswith(p):
-            return i
-    return len(FAM)
+# ascending codepoint within a family (famrank defined once, above)
 rows.sort(key=lambda r: (famrank(r[1]), r[0]))
 
 mode = ("codepoint " if direct is not None else "keyword ") + query
-print("nerdfont_lookup: %d Nerd Font file(s), %d match(es) for %s" % (len(fonts), len(rows), mode))
+print("nerdfont_lookup: %d terminal-chain font file(s) via %s, %d match(es) for %s" % (len(fonts), font_source, len(rows), mode))
 for cp, name in rows[:limit]:
     print("U+%04X  %-34s escape: %-12s" % (cp, name, esc(cp)))
 if len(rows) > limit:
@@ -788,7 +904,7 @@ if not rows:
 `;
 // Monospace grid renderer: column-width arithmetic + frames + dot leaders + escaped preview + optional real-char file write
 const RENDER_PY = `
-import sys
+import sys, unicodedata
 content = sys.stdin.read()
 argv = sys.argv[1:]
 width = int(argv[0]) if len(argv) > 0 and argv[0].isdigit() else None
@@ -822,19 +938,27 @@ def unesc(s):
     return "".join(out)
 
 def dw(s):
-    t = 0
+    total = 0
+    cluster = 0
+    joined = False
     for ch in s:
         o = ord(ch)
-        if 0x0300 <= o <= 0x036F or 0x200B <= o <= 0x200F or o == 0x2060 or o == 0xFEFF or 0xFE00 <= o <= 0xFE0F:
+        if o == 0x200D:
+            joined = True
             continue
-        if (0x1100 <= o <= 0x115F or 0x2E80 <= o <= 0xA4CF or 0xA960 <= o <= 0xA97F or
-                0xAC00 <= o <= 0xD7A3 or 0xF900 <= o <= 0xFAFF or 0xFE10 <= o <= 0xFE19 or
-                0xFE30 <= o <= 0xFE6F or 0xFF00 <= o <= 0xFF60 or 0xFFE0 <= o <= 0xFFE6 or
-                0x20000 <= o <= 0x3FFFD):
-            t += 2
+        if o == 0xFE0F:
+            cluster = max(cluster, 2)  # emoji presentation upgrades a narrow base
+            continue
+        if unicodedata.combining(ch) or unicodedata.category(ch) in ("Cf", "Mn", "Me") or 0x1F3FB <= o <= 0x1F3FF:
+            continue
+        width = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+        if joined:
+            cluster = max(cluster, width)  # a terminal renders a ZWJ emoji sequence as one cluster
+            joined = False
         else:
-            t += 1
-    return t
+            total += cluster
+            cluster = width
+    return total + cluster
 
 def to_prev(s):
     r = []
@@ -848,7 +972,7 @@ def to_prev(s):
             r.append(c)
     return "".join(r)
 
-src = [unesc(l) for l in content.split("\\n")]
+src = [unesc(l[:-1] if l.endswith("\\r") else l) for l in content.split("\\n")]
 
 def lw(l):
     if "\t" in l:
@@ -953,7 +1077,7 @@ export default function (pi: ExtensionAPI) {
       "Prefer this tool over guessing codepoints or writing your own scanning scripts.",
     parameters: Type.Object({
       query: Type.String({ description: "glyph name keyword, or U+XXXX codepoint" }),
-      limit: Type.Optional(Type.Number({ description: "max rows to return (default 20)" })),
+      limit: Type.Optional(Type.Number({ description: "max rows to return (default 20)", minimum: 1, maximum: 100, multipleOf: 1 })),
     }),
     async execute(_toolCallId, params) {
       const out = await new Promise<string>((resolve) => {
@@ -976,7 +1100,7 @@ export default function (pi: ExtensionAPI) {
     name: "render_preview",
     label: "Render Preview",
     description:
-      "Render monospace-grid layouts (posters, status bars, boxed tables) with exact terminal width " +
+      "Render monospace-grid layouts (posters, status bars, boxed tables) with wcwidth-style width " +
       "arithmetic: CJK/fullwidth = 2 columns, PUA icons = 1. Content lines support \\uXXXX escapes; " +
       "a line of just '-' or '=' becomes a horizontal rule; a line containing a tab becomes a " +
       "dot-leader row (leftpart<TAB>rightpart). frame: none|ascii|double adds box borders. " +
@@ -985,11 +1109,17 @@ export default function (pi: ExtensionAPI) {
       "Use this instead of hand-writing alignment scripts in bash.",
     parameters: Type.Object({
       content: Type.String({ description: "layout lines; \\uXXXX escapes OK; '-'/'=' rule lines; tab = dot-leader row" }),
-      width: Type.Optional(Type.Number({ description: "target inner width in columns (default: widest line)" })),
-      frame: Type.Optional(Type.String({ description: "none | ascii | double (default none)" })),
+      width: Type.Optional(Type.Number({ description: "target inner width in columns (default: widest line)", minimum: 1, maximum: 10000, multipleOf: 1 })),
+      frame: Type.Optional(Type.Union([Type.Literal("none"), Type.Literal("ascii"), Type.Literal("double")], { description: "box frame style (default none)" })),
       writePath: Type.Optional(Type.String({ description: "also write the real-char version to this file" })),
     }),
     async execute(_toolCallId, params) {
+      if (params.width !== undefined && (!Number.isInteger(params.width) || params.width < 1 || params.width > 10000)) {
+        return { content: [{ type: "text", text: "ERROR: width must be an integer from 1 to 10000" }], details: {} };
+      }
+      if (params.frame !== undefined && !["none", "ascii", "double"].includes(params.frame)) {
+        return { content: [{ type: "text", text: "ERROR: frame must be none, ascii, or double" }], details: {} };
+      }
       // writePath safety: only cwd and the system tmp by default; PI_RENDER_ALLOW_ANY=1 lifts it
       if (params.writePath && process.env.PI_RENDER_ALLOW_ANY !== "1") {
         const pathMod = require("node:path");
@@ -1121,6 +1251,7 @@ Markers and escapes inside code spans or fences are never touched.`
     const substitutedCps: number[] = [];
     const fillCps: number[] = [];
     let hatched = 0;
+    let contentChanged = false;
 
     const content = [];
     for (const block of msg.content as any[]) {
@@ -1145,7 +1276,10 @@ Markers and escapes inside code spans or fences are never touched.`
         }
       }
       if (text === block.text) content.push(block);
-      else content.push({ ...block, text });
+      else {
+        contentChanged = true;
+        content.push({ ...block, text });
+      }
     }
 
     // Hole 3: an at-risk codepoint from the stream snapshot missing in the final text → strip evidence
@@ -1157,7 +1291,7 @@ Markers and escapes inside code spans or fences are never touched.`
         .map((b: any) => b.text)
         .join("");
       const dropped = [...streamSeenCps].filter(
-        (cp) => !finalText.includes(String.fromCodePoint(cp)),
+        (cp) => !finalText.includes(String.fromCodePoint(cp)) && !finalText.includes(visibleMarker(cp)),
       );
       if (dropped.length > 0) {
         ctx.ui.notify(
@@ -1172,7 +1306,7 @@ Markers and escapes inside code spans or fences are never touched.`
     // Hatch-only rewrites must still land (double → single backslash display);
     // review precedent: hatched went uncounted once and this return dropped the rewrite (a real fake-green)
     if (restored === 0 && filled === 0 && substitutedCps.length === 0) {
-      if (hatched > 0) return { message: { ...msg, content } }; // carry the mapped content
+      if (hatched > 0 || contentChanged) return { message: { ...msg, content } }; // carry every mapped rewrite
       return;
     }
 

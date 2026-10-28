@@ -54,6 +54,24 @@ run(async () => {
     await new Promise((r) => setTimeout(r, 3000));
   }
   console.log("── ⑨ nerdfont_lookup 工具");
+  {
+    // Family priority is a deterministic contract: with two fixture fonts
+    // naming the same codepoint, "fa-special" must rank before
+    // "nf-dev-special" (nf- prefix stripped, fa before dev in FAM).
+    // Exercises the merged famrank (two divergent copies once shadowed
+    // each other — review round 16).
+    const rows = await (async () => {
+      try {
+        const r = await tools.nerdfont_lookup.execute("t", { query: "U+E777", limit: 5 });
+        return String(r.content[0].text);
+      } catch (e) {
+        return "THROWN: " + String(e);
+      }
+    })();
+    const iFa = rows.indexOf("fa-special");
+    const iDev = rows.indexOf("nf-dev-special");
+    t("族别优先（fa 先于 dev，nf- 前缀剥离）", iFa >= 0 && iDev >= 0 && iFa < iDev, rows.split("\n").slice(0, 4).join(" | "));
+  }
   t("已注册", !!tools.nerdfont_lookup && !!tools.render_preview, Object.keys(tools).join(","));
   if (tools.nerdfont_lookup) {
     const call = async (query, limit) => {
@@ -95,6 +113,14 @@ run(async () => {
     let out = await render({ content: "中文", width: 8 });
     // CJK=2 列：2 字 = 4 列，宽 8 → 右补 4 空格（左对齐）
     t("CJK 宽度算术 + 右补齐", out.split("\n")[1] === "中文    " && out.includes("8 cols"), JSON.stringify(out));
+    out = await render({ content: "🐍", width: 1, frame: "ascii" });
+    t("Emoji按双列计宽", out.includes("overflows: 2 > 1") && !out.includes("all rows = 1 cols"), JSON.stringify(out));
+    out = await render({ content: "A\r\nB", width: 1, frame: "ascii" });
+    t("render CRLF不计入宽度", !out.includes("\r") && !out.includes("overflows") && out.includes("|A|\n|B|"), JSON.stringify(out));
+    out = await render({ content: "x", width: -1, frame: "ascii" });
+    t("非法宽度可见报错", out.startsWith("ERROR: width"), JSON.stringify(out));
+    out = await render({ content: "x", frame: "rounded" });
+    t("非法边框可见报错", out.startsWith("ERROR: frame"), JSON.stringify(out));
     out = await render({ content: "左段\t右段", width: 20 });
     t("TAB → 点线行", out.includes("…") || out.includes("·") || /\.{3}/.test(out), JSON.stringify(out.slice(0, 150)));
     out = await render({ content: "标题", frame: "double", width: 10 });

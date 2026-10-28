@@ -19,14 +19,14 @@ LLM 的 tokenizer 不认识私有区码位（Nerd Font 图标全在此区）。�
 |---|---|
 | 转义还原 | `\uXXXX` / `\u{xxxxx}` → 真字形（代码段之外） |
 | 代码段保护 | 围栏块**和**行内段（CommonMark 等长定界符，含双反引号包裹）内的转义保持字面——配置文件复制粘贴保真 |
-| 可见替换 | **无可渲染字形**的码位（非字符、Tags、未分配 BMP、不在本机字体 cmap 并集、或 cmap 本身不可用）→ 可见标记 `□U+FDD0`，绝不隐形 |
+| 可见替换 | **无可渲染字形**的码位（非字符、Tags、未分配 BMP、不在已配置终端字体链、或字体链状态不可用）→ 可见标记 `□U+FDD0`，绝不隐形 |
 | 证据性补框 | 文本自带码位（Lua 风格 `-- U+E235` 注释）时尾部补 `□`；空引号对永不触碰（合法空串与丢字产物比特级相同，拒绝猜测） |
 | 输入自动转义 | **你发出的消息**里的 at-risk 字符自动转义（输入方向同样被剥）——模型真正收到你贴的内容 |
 | 流级丢失探测 | `message_update` 期间出现过、最终消息里消失的码位，点名报告 |
-| 字体 ground truth | 全部已装字体 cmap 并集缓存 + 签名失效；Linux / macOS / Windows 路径 |
+| 字体 ground truth | 终端实际字体/回退链 cmap + 签名失效；Linux 自动读取 fontconfig monospace 链，跨平台可用 `PI_NF_FONT_PATHS` 显式指定 |
 | `[[nf:名称]]` 语义标记（beta） | 写 `[[nf:python]]`，扩展按**本机字体**在渲染时解析成图标；未知名可见警告；代码段内保持字面 |
 | `nerdfont_lookup` 工具 | 按关键词/码位查本机 Nerd Font 字形，族别优先，内置 starship 默认表 |
-| `render_preview` 工具 | 等宽网格排版渲染（CJK=2 列、PUA=1 列、点线、边框） |
+| `render_preview` 工具 | 等宽网格排版渲染（CJK/Emoji=2 列、PUA=1 列、点线、边框） |
 
 ## 安装
 
@@ -38,14 +38,21 @@ pi install npm:pi-nerdfont-unescape
 
 ## 运行与测试依赖
 
-扩展本体运行时零依赖，但字形 ground truth（cmap 缓存）、`nerdfont_lookup`
-与 `render_preview` 会调用 `python3` + [fontTools]——缺失时可渲染性判定退化为
+扩展有一个很小的 npm 运行时依赖（`typebox`）。字形 ground truth（cmap 缓存）、
+`nerdfont_lookup` 与 `render_preview` 会调用 `python3` + [fontTools]——缺失时可渲染性判定退化为
 类别判断，**可见告警**，绝不静默。测试套件同样依赖。Windows 下未必有名为
 `python3` 的命令，需自行暴露（如 `py -3` 做壳）。
 
+Linux 默认读取 fontconfig 排好序的 `monospace` 回退链。macOS、Windows，或
+终端自定义字体与 fontconfig 不一致时，请将 `PI_NF_FONT_PATHS` 设为实际主字体
+和回退字体文件（也可给目录），多项用平台路径分隔符隔开。无法确认实际字体链
+时，扩展会保守显示 `□U+XXXX`，不会再用无关的已安装字体猜测“支持”。
+
 ## 测试与视觉验证工作流
 
-`tests/test-nerdfont-unescape.cjs` —— 与 test-tools.cjs 构成全量回归（数量随判例增长），含全部历史翻车形态。
+`tests/test-nerdfont-unescape.cjs` 与 `test-tools.cjs` 构成全量回归（数量随判例增长），
+含全部历史翻车形态。测试会现场生成一个最小确定性字体，不再依赖开发机装了哪些
+字体；GitHub CI 同时执行回归与变异审计。
 
 **渲染正确性的最终裁决权在像素**：单测会假绿（套件头注释记录了两种
 成因）。重要改动后：真实输出一条含目标形态的消息 → 截图 → 让视觉
@@ -58,6 +65,20 @@ pi install npm:pi-nerdfont-unescape
 `PI_VISION_MODEL` / `PI_VISION_BASE_URL` / `PI_VISION_API_KEY` 环境变量 →
 `~/.config/pi-nerdfont-unescape/vision.json` → 兜底默认（`glm-5.3-flash`，
 pi 自带凭证）。任何 OpenAI 兼容端点均可，fork 请用前两级设置自己的模型。
+
+
+`npm run test:audit` 用变异审计证明测试不是摆设：每条变异都必须让某个具体用例变红。
+逐条打印耗时与实时 ETA，按 CPU 并行（`--jobs`），每条结论写入
+`/tmp/pi-mutation-journal-<源码哈希>.json`——中断后原样重跑即从断点继续；
+源码一改日志自动失效，续跑不可能报出过期的绿。
+
+```bash
+npm run test:audit -- --only "M6[0-9]" --jobs 4   # 定向切片，几秒出结果
+npm run test:audit -- --fresh                     # 忽略日志从头跑
+npm run test:audit -- --list                      # 只列变异名
+```
+
+所有入口均幂等：临时状态在 `/tmp`，按 pid 或源码哈希命名，进程被 kill 后下次运行自动清扫。
 
 ## 边界说明：存档不是 ASCII
 

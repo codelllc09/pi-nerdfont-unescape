@@ -48,7 +48,8 @@ const input = (text) => handlers["input"]({ type: "input", text, source: "intera
 const stream = async (updateTexts, endText) => {
   await handlers["message_start"]?.({}, {});
   for (const t of updateTexts) await handlers["message_update"]({ message: { role: "assistant", content: [{ type: "text", text: t }] } }, ctx);
-  await handlers["message_end"]({ message: { role: "assistant", content: [{ type: "text", text: endText }] } }, ctx);
+  const r = await handlers["message_end"]({ message: { role: "assistant", content: [{ type: "text", text: endText }] } }, ctx);
+  return r?.message?.content?.[0]?.text ?? endText;
 };
 const lookup = async (q) => (await tools.nerdfont_lookup.execute("t", { query: q })).content[0].text;
 const render = async (p) => (await tools.render_preview.execute("t", p)).content[0].text;
@@ -151,6 +152,9 @@ const CASES = [
   { sec: "⑧ 流级丢失探测", name: "流转义还原不矛盾", kind: "stream", in: "流裸字符 → 终稿转义并还原",
     expect: "同一字符两种形态 → 只报已还原，不报 MISSING", mut: "M31", check: (a,n)=>n.includes("restored")&&!n.includes("MISSING"),
    },
+  { sec: "⑧ 流级丢失探测", name: "流可见替换不矛盾", kind: "stream", in: "流裸 E5EE → 终稿转义 → □U+E5EE",
+    expect: "可见标记已代表同一码位，不再同时报告 MISSING", mut: "M69", check: (a,n)=>a.includes("□U+E5EE")&&!n.includes("MISSING"),
+   },
   { sec: "⑧ 流级丢失探测", name: "emoji改稿不误报", kind: "stream", in: "流 ⟦1F680⟧ → 终稿删掉",
     expect: "emoji 正常改稿不进丢失快照", mut: "M27", check: (a,n)=>!n.includes("MISSING"),
    },
@@ -180,6 +184,18 @@ const CASES = [
    },
   { sec: "⑩ render_preview", name: "CJK 宽度算术 + 右补齐", kind: "render", in: "中文 / width=8",
     expect: "中文=4 列，右补 4 空格；审计报告 8 cols", mut: "M16", check: (a)=>a.includes("中文    ")&&a.includes("8 cols"),
+   },
+  { sec: "⑩ render_preview", name: "Emoji按双列计宽", kind: "render", in: "🐍 / width=1",
+    expect: "宽 Emoji 按 2 列计数，因此明确报告 2 > 1 溢出", mut: "M70", check: (a)=>a.includes("overflows: 2 > 1"),
+   },
+  { sec: "⑩ render_preview", name: "render CRLF不计入宽度", kind: "render", in: "A\\r\\nB / width=1 / frame=ascii",
+    expect: "行尾 CR 被剥离；A/B 均为 1 列且无溢出", mut: "M71", check: (a)=>!a.includes("overflows")&&!a.includes("\\r")&&a.includes("|A|")&&a.includes("|B|"),
+   },
+  { sec: "⑩ render_preview", name: "非法宽度可见报错", kind: "render", in: "width=-1",
+    expect: "非法宽度不静默回退，返回可见 ERROR", mut: "参数守卫", check: (a)=>a.startsWith("ERROR: width"),
+   },
+  { sec: "⑩ render_preview", name: "非法边框可见报错", kind: "render", in: "frame=rounded",
+    expect: "非法边框不静默当作 ASCII，返回可见 ERROR", mut: "参数守卫", check: (a)=>a.startsWith("ERROR: frame"),
    },
   { sec: "⑩ render_preview", name: "TAB → 点线行", kind: "render", in: "左段⇥右段 / width=20",
     expect: "含 TAB 的行 → 点线对齐行", mut: "M16", check: (a)=>a.includes("…")||/\.{3}/.test(a),
@@ -241,6 +257,9 @@ const CASES = [
   { sec: "⑭ [[nf:]] 语义标记(beta)", name: "git-branch 别名解析", kind: "nf", in: "[[nf:git-branch]]",
     expect: "稳定别名 → branch → E0A0（别名→精确名→子串 三级解析）", mut: "M39", check: (a)=>!a.includes("[[nf:git-branch]]")&&(/⟦U\+E0A0⟧/.test(a)||a.includes("□U+E0A0")),
    },
+  { sec: "⑭ [[nf:]] 语义标记(beta)", name: "安全码位同名不吞语义标记", kind: "nf", in: "[[nf:lambda]]",
+    expect: "普通 Unicode lambda 不抢占同名 Nerd Font PUA 图标；标记必须落地", mut: "M67", check: (a,n)=>!a.includes("[[nf:lambda]]")&&(/⟦U\+[EF][0-9A-F]{3,5}⟧/.test(a)||/□U\+[EF][0-9A-F]{3,5}/.test(a))&&!n.includes("no such name"),
+   },
   { sec: "⑭ [[nf:]] 语义标记(beta)", name: "围栏内标记不动", kind: "nf", in: "```[[nf:python]]```",
     expect: "代码里的标记是要复制的字面量，不解析", mut: "M7", check: (a)=>a.includes("[[nf:python]]"),
    },
@@ -249,6 +268,9 @@ const CASES = [
    },
   { sec: "⑮ [[nf:]] 健壮性", name: "旧Map遗留安全迁移", kind: "nf", in: "遗留裸Map→[[nf:python]]",
     expect: "旧结构安全重建，不崩溃，解析为正确码位", mut: "M40", check: (a)=>/⟦U\+E235⟧/.test(a)&&!/崩溃/.test(a)
+   },
+  { sec: "⑮ [[nf:]] 健壮性", name: "损坏cmap不击穿消息", kind: "nf", in: "全局 ranges=[null] 后还原 E235",
+    expect: "损坏 range 防御性判为无字形，显示 □U+E235，不抛 TypeError", mut: "M68", check: (a)=>a.includes("□U+E235")&&!a.includes("执行异常"),
    },
   { sec: "⑮ [[nf:]] 健壮性", name: "签名变化缓存失效", kind: "nf", in: "投毒缓存→改签名→重解析",
     expect: "cmap 指纹失配 → 缓存整体失效 → 投毒值被纠正", mut: "M41", check: (a)=>a.includes("纠正=true"),
@@ -283,8 +305,8 @@ const CASES = [
   { sec: "⑰⑱ 迁移与核验", name: "121/200字名告警", kind: "nf", in: "121 字与 200 字名",
     expect: "超长名同样点名（LOOSE 不限长）", mut: "M47", check: (a,n)=>n.includes("c".repeat(121))&&n.includes("d".repeat(200)),
    },
-  { sec: "⑱ 磁盘迁移与真实核验", name: "旧格式缓存拒收并重建", kind: "nf", in: "磁盘缓存只有 ranges、没有 sig",
-    expect: "旧格式不载入共享 cmap，并在后台重建带签名的新缓存", mut: "M52 M53", check: (a)=>/拒收=true/.test(a)&&/重建=true/.test(a),
+  { sec: "⑱ 磁盘迁移与真实核验", name: "损坏磁盘缓存拒收并重建", kind: "nf", in: "schema=2 但 ranges=[null]",
+    expect: "结构损坏的缓存不载入共享 cmap，并在后台重建", mut: "M52 M53", check: (a)=>/拒收=true/.test(a)&&/重建=true/.test(a),
    },
   { sec: "⑱ 磁盘迁移与真实核验", name: "并发重建去重", kind: "nf", in: "连续三次 session_start",
     expect: "只有一次 cmap 构建完成记录，不发生扫描风暴", mut: "M54", check: (a)=>/去重=true/.test(a),
@@ -337,13 +359,21 @@ const CASES = [
         if (c.name === "丢失被点名") await stream(["\ue235 在场"], "在场");
         else if (c.name === "一致时无误报") { const s = "稳定 \ue235 在场"; await stream([s], s); }
         else if (c.name === "流转义还原不矛盾") await stream([String.fromCodePoint(0xe235) + " 图"], "图 \\ue235");
+        else if (c.name === "流可见替换不矛盾") {
+          // E5EE is absent from the fixture chain → the escaped form lands as a
+          // visible marker; the stream saw the raw char, which is the SAME
+          // codepoint in another shape (no MISSING contradiction).
+          const finalText = await stream([String.fromCodePoint(0xe5ee) + " 图"], "图 \\ue5ee");
+          actual = `终稿: ${dec(finalText)}　` + (notes.length ? `通知: ${notes.map(dec).join(" ｜ ")}` : "(无通知)");
+          c.checked = true;
+        }
         else if (c.name === "emoji改稿不误报") await stream([String.fromCodePoint(0x1f680) + " 起飞"], "删掉了");
         else await (async () => {
           await handlers["message_start"]?.({}, {});
           await handlers["message_update"]({ message: { role: "user", content: [{ type: "text", text: "\ue235" }] } }, ctx);
           await handlers["message_end"]({ message: { role: "assistant", content: [{ type: "text", text: "回" }] } }, ctx);
         })();
-        actual = notes.length ? `通知: ${notes.map(dec).join(" ｜ ")}` : "(无通知)";
+        if (!c.checked) actual = notes.length ? `通知: ${notes.map(dec).join(" ｜ ")}` : "(无通知)";
       } else if (c.kind === "nf") {
         let src = c.in;
         if (c.name === "旧Map遗留安全迁移") { globalThis[Symbol.for("pi.nerdfontUnescape.nfCache")] = new Map([["python", 0xe0a0]]); src = "[[nf:python]]"; }
@@ -446,12 +476,30 @@ const CASES = [
           const warning = notes.find((n) => n.includes("invalid marker syntax")) ?? "";
           actual = `121字点名=${warning.includes("c".repeat(121))}\n200字点名=${warning.includes("d".repeat(200))}`;
         }
-        else if (c.name === "旧格式缓存拒收并重建" || c.name === "并发重建去重") {
+        else if (c.name === "损坏cmap不击穿消息") {
+          // Inject a structurally corrupt shared cmap, then restore it: the
+          // message pipeline must degrade to □U+XXXX, never throw.
+          const CSTK = Symbol.for("pi.nerdfontUnescape.cmap");
+          const saved = globalThis[CSTK];
+          globalThis[CSTK] = [null];
+          try {
+            src = "转义 \\ue235 结束";
+          } finally {
+            // restore after the shared end() runs below
+            setTimeout(() => { globalThis[CSTK] = saved; }, 0);
+          }
+        }
+        else if (c.name === "损坏磁盘缓存拒收并重建" || c.name === "旧格式缓存拒收并重建" || c.name === "并发重建去重") {
           const CSTK = Symbol.for("pi.nerdfontUnescape.cmap");
           const SIGK = Symbol.for("pi.nerdfontUnescape.cmapSig");
           const ASYNCK = Symbol.for("pi.nerdfontUnescape.cmapAsyncState");
           const cachePath = process.env.PI_NF_CMAP_CACHE;
-          fs.writeFileSync(cachePath, JSON.stringify({ fonts: ["fake"], ranges: [[57344, 57344]] }));
+          fs.writeFileSync(
+            cachePath,
+            c.name === "损坏磁盘缓存拒收并重建"
+              ? JSON.stringify({ schema: 2, fonts: 1, ranges: [null], sig: "fake" }) // valid JSON, structurally corrupt
+              : JSON.stringify({ fonts: ["fake"], ranges: [[57344, 57344]] }), // legacy shape (no schema/sig)
+          );
           delete globalThis[CSTK]; delete globalThis[SIGK];
           globalThis[ASYNCK] = { checking: false, building: false };
           const logs = [];
@@ -465,7 +513,7 @@ const CASES = [
             for (let i = 0; i < 40 && typeof globalThis[SIGK] !== "string"; i++) await new Promise((r) => setTimeout(r, 3000));
             await new Promise((r) => setTimeout(r, 3000));
             const builds = logs.filter((s) => s.includes("cmap cache:")).length;
-            actual = c.name === "旧格式缓存拒收并重建"
+            actual = c.name === "损坏磁盘缓存拒收并重建" || c.name === "旧格式缓存拒收并重建"
               ? `旧格式拒收=${rejected}\n签名重建=${typeof globalThis[SIGK] === "string"}`
               : `构建完成次数=${builds}\n(去重=${builds === 1})`;
           } finally {
@@ -514,13 +562,27 @@ const CASES = [
         actual = dec(out).split("\n").slice(0, 6).join("\n");
       } else if (c.kind === "render") {
         let out;
-        if (c.name.startsWith("CJK")) out = await render({ content: "中文", width: 8 });
-        else if (c.name.startsWith("TAB")) out = await render({ content: "左段\t右段", width: 20 });
-        else if (c.name === "双边框") out = await render({ content: "标题", frame: "double", width: 10 });
-        else if (c.name === "writePath 护栏") out = await render({ content: "x", writePath: "/etc/pi-render-guard-test.out" });
-        else if (c.name === "六位转义按图标计宽") out = await render({ content: "\\u{100000} 六位", width: 12 });
-        else if (c.name === "六位预览转义字面量") out = await render({ content: "\\u{100000} x", width: 10 });
-        else if (c.name === "非法码位短错误") out = await render({ content: "\\u{ffffff} z", width: 10 });
+        // Scenario-driven first: every row's own `in` spec ("<content> / width=N
+        // [/ frame=x]") must actually reach the renderer. Name-matched fallbacks
+        // ran the wrong layout for newly added rows and their checks caught it
+        // (round-12 lesson, inverted) — parameterize, do not special-case.
+        const mIn = c.in.match(/^(.*?)\s*\/\s*width=(-?\d+)(?:\s*\/\s*frame=(\w+))?\s*$/);
+        const mPlainFrame = c.in.match(/\/\s*frame=(\w+)\s*$/);
+        if (mIn) {
+          const content = mIn[1].replace(/\\r\\n/g, "\r\n").replace(/⇥/g, "\t");
+          const width = Number(mIn[2]);
+          const frame = mIn[3] ?? mPlainFrame?.[1] ?? (c.name === "双边框" ? "double" : undefined);
+          out = await render({ content, width, ...(frame ? { frame } : {}) });
+        } else if ((c.mW = c.in.match(/^width=(-?\d+)$/))) {
+          out = await render({ content: "x", width: Number(c.mW[1]) });
+        } else if ((c.mF = c.in.match(/^frame=(\w+)$/))) {
+          out = await render({ content: "x", width: 4, frame: c.mF[1] });
+        } else if (mPlainFrame && !mIn) {
+          // "<content> / frame=x" without an explicit width
+          out = await render({ content: c.in.replace(/\s*\/\s*frame=\w+\s*$/, "").trim(), frame: mPlainFrame[1] });
+        } else if (c.name === "写盘回报" || c.name === "writePath 写出真字符") {
+          out = await render({ content: "\\ue235 图标", width: 10, writePath: "/tmp/review-render.out" });
+        } else if (c.name === "writePath 护栏") out = await render({ content: "x", writePath: "/etc/pi-render-guard-test.out" });
         else if (c.name === "符号链接不绕护栏") {
           const fs = require("fs"); const link = "/tmp/review-guard-link";
           try { fs.unlinkSync(link); } catch {}
@@ -529,7 +591,10 @@ const CASES = [
           fs.unlinkSync(link);
         }
         else if (c.name === "预览含转义字面量") out = await render({ content: "\\ue235 图标", width: 10 });
-        else out = await render({ content: "\\ue235 图标", width: 10, writePath: "/tmp/review-render.out" });
+        else if (c.name === "六位转义按图标计宽") out = await render({ content: "\\u{100000} 六位", width: 12 });
+        else if (c.name === "六位预览转义字面量") out = await render({ content: "\\u{100000} x", width: 10 });
+        else out = await render({ content: "\\u{ffffff} z", width: 10 });
+        actual = dec(out).split("\n").slice(0, 6).join("\n");
         actual = dec(out).split("\n").slice(0, 6).join("\n");
         if (c.name === "writePath 写出真字符") {
           const w = fs.readFileSync("/tmp/review-render.out", "utf8");

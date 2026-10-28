@@ -4,13 +4,22 @@
  * 对应测试必须变红；红不了的测试 = 摆设（从未能证明自己会失败）。
  *
  * 运行: node tests/mutation-audit.cjs   （不改动仓库内源文件，变异体写 /tmp）
+ *   --jobs N     并行 worker 数（默认 CPU-1，上限 16）
+ *   --only 正则  只跑名字匹配的变异（锚点仍全量校验）
+ *   --from N     从第 N 条开始（配合 --only 做断点续跑）
+ *   --list       只列出变异名，不执行
+ *   --fresh      忽略续跑日志，从头审计
+ * 幂等/续跑: 每条变异完成即写入 /tmp/pi-mutation-journal-<源码哈希>.json；
+ *   中断后原样重跑会跳过已完成条目（源码或锚点变化则日志自动失效）。
+ *   所有中间产物都在 /tmp 且按 pid 命名，重复运行互不干扰。
+ * 进度: 每条变异完成即打印 [i/N] 耗时 结果 名称 ETA；锚点过期在开跑前 1 秒内报错。
  * 原则: 测试的对错交给代码——本审计零模型参与，退出码即结论。
  *
  * 判定：
  *   - 无效变异（没杀死任何测试）→ 审计失败
  *   - 从未变红过的测试名 → 审计失败（装饰品）
  */
-const { spawnSync } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -48,7 +57,7 @@ const MUTATIONS = [
   { name: "M10 流快照禁用", suites: [1],
     old: "streamSeenCps.add(cp);", new: "void cp;" },
   { name: "M11 流比较失效(恒报丢失)", suites: [1, 2],
-    old: "(cp) => !finalText.includes(String.fromCodePoint(cp)),", new: "() => true," },
+    old: "(cp) => !finalText.includes(String.fromCodePoint(cp)) && !finalText.includes(visibleMarker(cp)),", new: "() => true," },
   { name: "M12 注入不追加", suites: [2],
     old: "(event.systemPrompt ?? \"\") +", new: '"" +' },
   { name: "M13a 注入无协议名", suites: [2],
@@ -96,7 +105,7 @@ const MUTATIONS = [
     old: "0 < k - j - 1 <= 6",
     new: "0 < k - j - 1 < 6" },
   { name: "M30 逃生舱落盘旁路", suites: [1],
-    old: "if (hatched > 0) return { message: { ...msg, content } };",
+    old: "if (hatched > 0 || contentChanged) return { message: { ...msg, content } };",
     new: "if (false) return { message: { ...msg, content } };" },
   { name: "M31 流比对回原始文本", suites: [1],
     old: "const finalText = (content as any[])",
@@ -165,8 +174,8 @@ const MUTATIONS = [
     old: "if (seg.includes(String.fromCodePoint(cp)) || seg.includes(marker)) return m;",
     new: "if (text.includes(String.fromCodePoint(cp)) || text.includes(marker)) return m;" },
   { name: "M61 标记识别移除", suites: [1],
-    old: "const marker = `${TOFU}U+${cp.toString(16).toUpperCase().padStart(4, \"0\")}`;\n      if (seg.includes(String.fromCodePoint(cp)) || seg.includes(marker)) return m;",
-    new: "if (seg.includes(String.fromCodePoint(cp))) return m;" },
+    old: "const marker = visibleMarker(cp);\n      if (seg.includes(String.fromCodePoint(cp)) || seg.includes(marker)) return m;",
+    new: "void cp;\n      if (seg.includes(String.fromCodePoint(cp))) return m;" },
   { name: "M59 码位注释六位退回", suites: [1],
     old: "const LUALINE = /(--[ \\t]*U\\+[0-9A-Fa-f]{4,6})[ \\t]*\\r?$/; // 4-6 hex (PUA-B needs 6); \\r? = CRLF tolerance",
     new: "const LUALINE = /(--[ \\t]*U\\+[0-9A-Fa-f]{4,5})[ \\t]*\\r?$/;" },
@@ -182,12 +191,12 @@ const MUTATIONS = [
   { name: "M51 reload核验旁路", suites: [1], slow: true, count: 2,
     old: "checkCmapSignature(notify);",
     new: "void notify;" },
-  { name: "M52 旧格式宽容退回", suites: [1], slow: true,
-    old: "if (!Array.isArray(data.ranges) || typeof data.sig !== \"string\") return false;",
+  { name: "M52 损坏缓存宽容退回", suites: [1], slow: true,
+    old: "if (data.schema !== 2 || !validRanges(data.ranges) || typeof data.sig !== \"string\" || data.sig.length === 0) return false;",
     new: "if (!Array.isArray(data.ranges)) return false;" },
   { name: "M53 模板转义腐坏退回", suites: [1], slow: true,
-    old: 'try: h.update(("%s:%d\\\\n" % (p, os.path.getmtime(p))).encode())',
-    new: 'try: h.update(("%s:%d\\n" % (p, os.path.getmtime(p))).encode())' },
+    old: 'h.update(("%s:%d:%d\\\\n" % (p, st.st_size, st.st_mtime_ns)).encode())',
+    new: 'h.update(("%s:%d:%d\\n" % (p, st.st_size, st.st_mtime_ns)).encode())' },
   { name: "M54 并发重建去重旁路", suites: [1], slow: true,
     old: "if (state.building) return;",
     new: "if (false) return;" },
@@ -204,86 +213,278 @@ const MUTATIONS = [
     old: 'ALIAS = {"git-branch": "branch", "node-js": "nodejs", "node.js": "nodejs", "macos": "apple"}',
     new: 'ALIAS = {"git-branch": "branch", "node-js": "nodejs", "node.js": "nodejs", "macos": "apple", "vscode": "visual-studio-code"}' },
   { name: "M37 未知名假解析", suites: [1],
-    old: "const cp = cache.get(k) ?? null;",
-    new: "const cp = cache.get(k) ?? 0xe235;" },
+    old: "const raw = cache.get(k);",
+    new: "const raw = cache.get(k) ?? 0xe235;" },
+  { name: "M67 非图标码位放行", suites: [1],
+    old: "cp === null ? null : isAtRisk(cp) ? cp : -cp",
+    new: "cp === null ? null : cp" },
+  { name: "M68 损坏全局range击穿", suites: [1],
+    old: "if (!Array.isArray(range) || range.length !== 2) return false;",
+    new: "void range;" },
+  { name: "M69 可见标记不算最终存在", suites: [1],
+    old: "(cp) => !finalText.includes(String.fromCodePoint(cp)) && !finalText.includes(visibleMarker(cp)),",
+    new: "(cp) => !finalText.includes(String.fromCodePoint(cp))," },
+  { name: "M70 Emoji宽度退回单列", suites: [2],
+    old: 'width = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1',
+    new: 'width = 1' },
+  { name: "M71 render CRLF剥离移除", suites: [2],
+    old: 'src = [unesc(l[:-1] if l.endswith("\\\\r") else l) for l in content.split("\\\\n")]',
+    new: 'src = [unesc(l) for l in content.split("\\\\n")]' },
+  { name: "M73 宽度守卫移除", suites: [2],
+    old: "if (params.width !== undefined && (!Number.isInteger(params.width) || params.width < 1 || params.width > 10000)) {",
+    new: "if (false) {" },
+  { name: "M74 边框守卫移除", suites: [2],
+    old: 'if (params.frame !== undefined && !["none", "ascii", "double"].includes(params.frame)) {',
+    new: "if (false) {" },
+  { name: "M75 writePath接线断开", suites: [2],
+    old: 'params.frame ?? "none", params.writePath ?? ""],',
+    new: 'params.frame ?? "none", ""],' },
+  { name: "M76 族优先级顺序错乱", suites: [2],
+    old: 'FAM = ("pl", "linux", "fae", "fa", "oct", "md", "seti", "dev", "cod", "custom", "ie", "weather")',
+    new: 'FAM = ("pl", "linux", "fae", "dev", "oct", "md", "seti", "fa", "cod", "custom", "ie", "weather")' },
+  { name: "M72 显式终端字体来源失真", suites: [1], slow: true,
+    old: 'return found, "explicit"', count: 2,
+    new: 'return found, "mutated"' },
+  { name: "M73 lookup忽略显式终端字体", suites: [1, 2],
+    old: "fonts, font_source = discover_fonts()",
+    new: 'fonts, font_source = [], "mutated"' },
 ];
 
 const src = fs.readFileSync(SRC, "utf8");
 
-function runSuite(id, full, extensionPath = MUTATED) {
-  const r = spawnSync("node", [SUITES[id]], {
-    env: { ...process.env, EXT_PATH: extensionPath, PI_NF_CMAP_CACHE: AUDIT_CACHE, ...(full ? {} : { SKIP_SLOW: "1" }) },
-    encoding: "utf8", timeout: 240000,
-  });
-  const out = r.stdout || "";
-  const failed = [];
-  for (const line of out.split("\n")) {
-    const m = line.match(/^  ✗ (.*)$/);
-    if (m) failed.push(m[1].split("  ")[0].trim());
-  }
-  const crashed = r.status !== 0 && failed.length === 0;
-  return { failed, crashed, tail: out.split("\n").filter(Boolean).slice(-2).join(" | ") };
+(async () => {
+
+// ── CLI ────────────────────────────────────────────────────────
+const argv = process.argv.slice(2);
+function flag(name, fallback) {
+  const k = argv.indexOf(`--${name}`);
+  return k >= 0 && argv[k + 1] !== undefined ? argv[k + 1] : fallback;
+}
+const JOBS = Math.max(1, Math.min(16, Number(flag("jobs", Math.max(1, os.cpus().length - 1))) || 1));
+const onlyRe = flag("only", null) ? new RegExp(flag("only"), "i") : null;
+const fromIdx = Number(flag("from", "0")) || 0;
+if (argv.includes("--list")) {
+  MUTATIONS.forEach((m, i) => console.log(`${String(i + 1).padStart(3)}  ${m.name}`));
+  process.exit(0);
 }
 
-// Build one isolated, valid baseline before mutation runs. Every child receives
-// a fresh copy so a killed or crashing mutant cannot poison the next mutation.
-const warm = runSuite(1, false, SRC);
-if (warm.crashed || warm.failed.length || !fs.existsSync(AUDIT_CACHE)) {
-  console.error(`✗ 隔离 cmap 基线构建失败：${warm.tail || warm.failed.join(", ")}`);
+// ── ANCHOR VALIDATION FIRST ────────────────────────────────────
+// A stale anchor used to abort the run AFTER ~20 minutes of unrelated work.
+// Validate every anchor before spawning anything: failures surface in ~1s.
+const anchorErrors = [];
+for (const mu of MUTATIONS) {
+  const want = mu.count ?? 1;
+  const count = src.split(mu.old).length - 1;
+  if (count !== want) anchorErrors.push(`${mu.name}: anchor matched ${count}x (want ${want})`);
+  if (mu.old === mu.new) anchorErrors.push(`${mu.name}: old === new (no mutation)`);
+}
+if (anchorErrors.length) {
+  anchorErrors.forEach((e) => console.error(`✗ ${e}`));
+  console.error("审计中止：先修锚点（这不是测试失败）");
   process.exit(1);
 }
-const auditCacheBaseline = fs.readFileSync(AUDIT_CACHE);
+
+const SELECTED = MUTATIONS.slice(fromIdx).filter((m) => !onlyRe || onlyRe.test(m.name));
+
+// ── Resume journal（幂等续跑）─────────────────────────────────
+// Keyed by a hash of the extension source: any code change invalidates the
+// whole journal automatically, so a stale entry can never fake a green run.
+const crypto = require("crypto");
+const sha = (s) => crypto.createHash("sha256").update(s).digest("hex");
+const SRC_HASH = sha(src);
+const JOURNAL = path.join("/tmp", `pi-mutation-journal-${SRC_HASH.slice(0, 12)}.json`);
+function loadJournal() {
+  if (argv.includes("--fresh")) return { srcHash: SRC_HASH, entries: {} };
+  try {
+    const j = JSON.parse(fs.readFileSync(JOURNAL, "utf8"));
+    if (j.srcHash === SRC_HASH && j.entries) return j;
+  } catch {}
+  return { srcHash: SRC_HASH, entries: {} };
+}
+const journal = loadJournal();
+function saveJournal() {
+  const tmp = `${JOURNAL}.${process.pid}`;
+  fs.writeFileSync(tmp, JSON.stringify(journal));
+  fs.renameSync(tmp, JOURNAL); // atomic replace: a kill mid-write cannot corrupt it
+}
+if (!SELECTED.length) {
+  console.error("没有匹配的变异");
+  process.exit(1);
+}
+
+// ── Isolation ──────────────────────────────────────────────────
+// Each worker gets its own mutated file and its own cache copy, so concurrent
+// mutants can never read each other's extension or poison a shared cache.
+function paths(worker) {
+  return {
+    ext: path.join("/tmp", `pi-mutated-${process.pid}-${worker}.ts`),
+    cache: path.join(AUDIT_DIR, `cmap-${process.pid}-${worker}.json`),
+  };
+}
+
+function runSuiteAsync(id, full, extPath, cachePath, worker) {
+  return new Promise((resolve) => {
+    const child = spawn("node", [SUITES[id]], {
+      env: { ...process.env, EXT_PATH: extPath, PI_NF_CMAP_CACHE: cachePath, ...(full ? {} : { SKIP_SLOW: "1" }) },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let out = "";
+    child.stdout.on("data", (d) => { out += d; });
+    child.stderr.on("data", (d) => { out += d; });
+    const timer = setTimeout(() => child.kill("SIGKILL"), 240000);
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      const failed = [];
+      for (const line of out.split("\n")) {
+        const m = line.match(/^  ✗ (.*)$/);
+        if (m) failed.push(m[1].split("  ")[0].trim());
+      }
+      resolve({
+        failed,
+        crashed: code !== 0 && failed.length === 0,
+        tail: out.split("\n").filter(Boolean).slice(-2).join(" | "),
+      });
+    });
+  });
+}
+
+function fmtDur(ms) {
+  const s = Math.round(ms / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s`;
+}
+
+// Baseline: one isolated, valid cache built from the unmutated source.
+const warm = runSuiteAsync(1, false, SRC, path.join(AUDIT_DIR, `cmap-warm-${process.pid}.json`), "warm");
+const warmR = await warm;
+const warmCache = path.join(AUDIT_DIR, `cmap-warm-${process.pid}.json`);
+if (warmR.crashed || warmR.failed.length || !fs.existsSync(warmCache)) {
+  console.error(`✗ 隔离 cmap 基线构建失败：${warmR.tail || warmR.failed.join(", ")}`);
+  process.exit(1);
+}
+const auditCacheBaseline = fs.readFileSync(warmCache);
 
 const killedBy = new Map(); // test name -> [mutation names]
 const ineffective = [];
 const crashedNote = [];
 
-for (const mu of MUTATIONS) {
-  const want = mu.count ?? 1;
-  const count = src.split(mu.old).length - 1;
-  if (count !== want) {
-    console.error(`✗ 变异 ${mu.name} 锚点命中 ${count} 次（须恰 ${want} 次），审计中止——锚点过期需更新`);
-    process.exit(1);
+// Idempotent start: sweep leftovers from killed workers (our own prefixes only,
+// older than 10 minutes so a concurrent run is never disturbed).
+try {
+  const now = Date.now();
+  for (const f of fs.readdirSync("/tmp")) {
+    if (!/^pi-mutated-\d+-\d+\.ts$/.test(f) && !/^pi-mutation-journal-.*\.json\.\d+$/.test(f)) continue;
+    const p2 = path.join("/tmp", f);
+    try { if (now - fs.statSync(p2).mtimeMs > 600000) fs.rmSync(p2, { force: true }); } catch {}
   }
-  fs.writeFileSync(MUTATED, src.split(mu.old).join(mu.new));
+} catch {}
+
+const resumed = SELECTED.filter((m) => journal.entries[m.name]?.oldHash === sha(m.old).slice(0, 16)).length;
+console.log(`变异审计：${SELECTED.length}/${MUTATIONS.length} 条，并行 ${JOBS}（每条 = 完整套件子进程），锚点全量校验通过`);
+if (resumed) {
+  console.log(`断点续跑：${resumed} 条已有结论（源码哈希 ${SRC_HASH.slice(0, 12)}，--fresh 可忽略日志重跑）`);
+  console.log(`  剩余 ${SELECTED.length - resumed} 条`);
+}
+console.log(`预计 ${fmtDur((SELECTED.length - resumed) * 18000 / JOBS)}（单条约 18s；实测会随机器波动）\n`);
+
+const startedAt = Date.now();
+let done = 0;
+
+async function runOne(mu, worker) {
+  const { ext, cache } = paths(worker);
+  const t0 = Date.now();
+  const oldHash = sha(mu.old).slice(0, 16);
+  const cached = journal.entries[mu.name];
+  if (cached && cached.oldHash === oldHash) {
+    // Resume: replay the recorded verdict instead of re-running the suites.
+    for (const n of cached.failed) {
+      if (!killedBy.has(n)) killedBy.set(n, []);
+      killedBy.get(n).push(mu.name);
+    }
+    if (cached.crashed) crashedNote.push(`${mu.name}→journal`);
+    if (!cached.failed.length) ineffective.push(mu.name);
+    done++;
+    const elapsed = Date.now() - startedAt;
+    const eta = done ? (elapsed / done) * (SELECTED.length - done) : 0;
+    console.log(`[${String(done).padStart(3)}/${SELECTED.length}]  ↺跳过  ${String(cached.failed.length + " 红").padEnd(8)} ${mu.name}   (ETA ${fmtDur(eta)})`);
+    return;
+  }
+  fs.writeFileSync(ext, src.split(mu.old).join(mu.new));
   const killed = new Set();
   let crashed = false;
-  for (const id of mu.suites) {
-    fs.writeFileSync(AUDIT_CACHE, auditCacheBaseline);
-    const r = runSuite(id, mu.slow === true); // slow 变异才需要慢测试（真实字体扫描）
-    r.failed.forEach((n) => killed.add(n));
-    if (r.crashed) { crashed = true; crashedNote.push(`${mu.name}→套件${id}`); }
+  try {
+    for (const id of mu.suites) {
+      fs.writeFileSync(cache, auditCacheBaseline);
+      const r = await runSuiteAsync(id, mu.slow === true, ext, cache, worker);
+      r.failed.forEach((n) => killed.add(n));
+      if (r.crashed) { crashed = true; crashedNote.push(`${mu.name}→套件${id}`); }
+    }
+  } finally {
+    fs.rmSync(ext, { force: true });
+    fs.rmSync(cache, { force: true });
   }
   const names = [...killed];
-  names.sort().forEach((n) => {
+  for (const n of names) {
     if (!killedBy.has(n)) killedBy.set(n, []);
     killedBy.get(n).push(mu.name);
-  });
-  console.log(`${names.length || (crashed ? "套件崩溃" : "0")}  ${mu.name}${names.length ? "  ⇒ " + names.join(", ") : ""}`);
+  }
   if (!names.length) ineffective.push(mu.name);
+  journal.entries[mu.name] = { oldHash, failed: names, crashed };
+  saveJournal(); // resumable from here even if this process is killed next second
+  done++;
+  const elapsed = Date.now() - startedAt;
+  const eta = done ? (elapsed / done) * (SELECTED.length - done) : 0;
+  const verdict = names.length ? `${names.length} 红` : crashed ? "套件崩溃" : "0 红 ✗";
+  console.log(
+    `[${String(done).padStart(3)}/${SELECTED.length}] ${fmtDur(Date.now() - t0).padStart(5)}  ${verdict.padEnd(8)} ${mu.name}` +
+    (names.length ? `  ⇒ ${names.join(", ")}` : "") + `   (ETA ${fmtDur(eta)})`,
+  );
 }
 
-// 汇总：每个测试名都必须被至少一条变异杀死过
+// Bounded worker pool: N concurrent mutations, each fully isolated.
+const queue = [...SELECTED];
+await Promise.all(
+  Array.from({ length: Math.min(JOBS, queue.length) }, async (_, w) => {
+    while (queue.length) {
+      const mu = queue.shift();
+      await runOne(mu, w);
+    }
+  }),
+);
+
+// 汇总：每个测试名都必须被至少一条变异杀死过（全量盘点，不并发——它自身会写共享缓存）
 const allTests = new Set();
 for (const id of [1, 2]) {
-  fs.rmSync(MUTATED, { force: true });
-  fs.writeFileSync(AUDIT_CACHE, auditCacheBaseline);
+  const cachePath = path.join(AUDIT_DIR, `cmap-inventory-${process.pid}.json`);
+  fs.writeFileSync(cachePath, auditCacheBaseline);
   const r = spawnSync("node", [SUITES[id]], {
-    env: { ...process.env, PI_NF_CMAP_CACHE: AUDIT_CACHE }, encoding: "utf8", timeout: 240000,
-  }); // 盘点全量
+    env: { ...process.env, PI_NF_CMAP_CACHE: cachePath }, encoding: "utf8", timeout: 240000,
+  });
   for (const line of (r.stdout || "").split("\n")) {
     const m = line.match(/^  [✓✗] (.*)$/);
     if (m) allTests.add(m[1].split("  ")[0].trim());
   }
+  fs.rmSync(cachePath, { force: true });
 }
-const uncovered = [...allTests].filter((n) => !killedBy.has(n));
+const fullRun = SELECTED.length === MUTATIONS.length;
+// Coverage is only meaningful for a complete run: a filtered run cannot kill
+// tests it never exercised (reporting them as decorations would be a lie).
+const uncovered = fullRun ? [...allTests].filter((n) => !killedBy.has(n)) : [];
 
-console.log("\n── 审计结论");
-console.log(`变异总数 ${MUTATIONS.length}；覆盖测试 ${killedBy.size}/${allTests.size}`);
+console.log(`\n── 审计结论（总耗时 ${fmtDur(Date.now() - startedAt)}）`);
+console.log(
+  fullRun
+    ? `变异总数 ${SELECTED.length}；覆盖测试 ${killedBy.size}/${allTests.size}`
+    : `定向模式：跑 ${SELECTED.length}/${MUTATIONS.length} 条，跳过覆盖判定（全量请去掉 --only/--from）`,
+);
 if (crashedNote.length) console.log(`套件崩溃（非断言式失败）: ${crashedNote.join(", ")}`);
 if (ineffective.length) console.log(`✗ 无效变异: ${ineffective.join(", ")}`);
 if (uncovered.length) console.log(`✗ 从未变红（装饰品嫌疑）: ${uncovered.join(", ")}`);
-if (!ineffective.length && !uncovered.length) console.log("✓ 全部测试都被证明会红，全部变异都杀死了测试");
-fs.rmSync(MUTATED, { force: true });
+if (!ineffective.length && !uncovered.length && fullRun) console.log("✓ 全部测试都被证明会红，全部变异都杀死了测试");
+if (fullRun && !anchorErrors.length && !ineffective.length && !uncovered.length) {
+  fs.rmSync(JOURNAL, { force: true }); // complete green run: nothing to resume
+} else {
+  console.log(`续跑日志: ${JOURNAL}` + (fullRun ? "" : "（定向模式保留，便于多次 --only 累积）"));
+}
+fs.rmSync(warmCache, { force: true });
 fs.rmSync(AUDIT_DIR, { recursive: true, force: true });
-process.exit(ineffective.length || uncovered.length ? 1 : 0);
+})().catch((e) => { console.error(e); process.exit(1); });

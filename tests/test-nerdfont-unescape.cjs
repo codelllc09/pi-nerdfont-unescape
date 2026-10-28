@@ -53,6 +53,7 @@ const t = (name, ok, detail = "") => {
     await new Promise((r) => setTimeout(r, 3000));
   }
 
+
   console.log("── ① 转义还原");
   let a = await end("图标 \\ue235 与 \\u{f0805} Azure");
   t("4位形式还原", hasCp(a, 0xe235));
@@ -180,6 +181,21 @@ const t = (name, ok, detail = "") => {
   const restoredN = notes.some((n) => n.includes("restored"));
   t("流转义还原不矛盾", restoredN && !missN, JSON.stringify(notes));
 
+  // 2026-10-29 strict review: a missing-font substitution is still the same
+  // codepoint in a visible form; it must not also be reported as transit loss.
+  {
+    const CMAP = Symbol.for("pi.nerdfontUnescape.cmap");
+    const saved = globalThis[CMAP];
+    globalThis[CMAP] = [];
+    notes.length = 0;
+    await h["message_start"]?.({}, {});
+    await h["message_update"]({ message: { role: "assistant", content: [{ type: "text", text: String.fromCodePoint(0xe5ee) }] } }, ctx);
+    const markerEnd = await h["message_end"]({ message: { role: "assistant", content: [{ type: "text", text: "\\ue5ee" }] } }, ctx);
+    globalThis[CMAP] = saved;
+    const markerText = markerEnd?.message?.content?.[0]?.text ?? "";
+    t("流可见替换不矛盾", markerText.includes("□U+E5EE") && !notes.some((n) => n.includes("MISSING")), JSON.stringify(notes));
+  }
+
   // 变异下解析可能崩溃——本段一律走防御式 end，失败归因到具体用例而非套件崩溃
   const safeEnd = async (t) => {
     try {
@@ -196,13 +212,40 @@ const t = (name, ok, detail = "") => {
   t("大写标记解析", !a.includes("[[NF:python]]") && (hasCp(a, 0xe235) || a.includes("□U+E235")), JSON.stringify(a));
   a = await safeEnd("分支 [[nf:git-branch]] 图标");
   t("git-branch 别名解析", !a.includes("[[nf:git-branch]]") && (hasCp(a, 0xe0a0) || a.includes("□U+E0A0")), JSON.stringify(a));
+  // A Nerd Font also contains ordinary Unicode glyph names such as lambda.
+  // The semantic protocol must select the PUA icon, never silently keep the marker.
+  notes.length = 0;
+  a = await safeEnd("函数 [[nf:lambda]] 图标");
+  const hasPua = [...a].some((ch) => {
+    const cp = ch.codePointAt(0);
+    return (cp >= 0xe000 && cp <= 0xf8ff) || (cp >= 0xf0000 && cp <= 0x10fffd);
+  });
+  t("安全码位同名不吞语义标记", !a.includes("[[nf:lambda]]") && (hasPua || /□U\+[0-9A-F]{4,6}/.test(a)) && !notes.some((n) => n.includes("no such name")), JSON.stringify(a) + "|" + JSON.stringify(notes));
   a = await safeEnd("```\n[[nf:python]]\n```");
   t("围栏内标记不动", a.includes("[[nf:python]]"), JSON.stringify(a));
   notes.length = 0;
   a = await safeEnd("未知 [[nf:zzz_no_such]] 名");
   t("未知名保留+点名", a.includes("[[nf:zzz_no_such]]") && notes.some((n) => n.includes("zzz_no_such")), JSON.stringify(notes));
 
-  console.log("── ⑮ [[nf:]] 健壮性（缓存与语法）");  // 旧版裸 Map 遗留（reload 同进程）→ 必须安全重建而非崩溃（外部评审判例）
+  console.log("── ⑮ [[nf:]] 健壮性（缓存与语法）");
+  {
+    notes.length = 0;
+    a = await end("[[nf:alpha]] 与 [[nf:special]]");
+    const w = notes.find((n) => n.includes("alpha")) ?? "";
+    t(
+      "非图标同名不吞标记",
+      a.includes("[[nf:alpha]]") && w.includes("U+03B1") && !w.includes("no such name"),
+      JSON.stringify({ text: a, warn: w.slice(0, 120) }),
+    );
+  }  // 旧版裸 Map 遗留（reload 同进程）→ 必须安全重建而非崩溃（外部评审判例）
+  {
+    const CMAP = Symbol.for("pi.nerdfontUnescape.cmap");
+    const saved = globalThis[CMAP];
+    globalThis[CMAP] = [null]; // valid JSON shape at the outer level, corrupt range entry
+    const corrupt = await safeEnd("损坏缓存 \\ue235");
+    globalThis[CMAP] = saved;
+    t("损坏cmap不击穿消息", !corrupt.startsWith("崩溃:") && corrupt.includes("□U+E235"), JSON.stringify(corrupt));
+  }
   globalThis[Symbol.for("pi.nerdfontUnescape.nfCache")] = new Map([["python", 0xe0a0]]);
   let mig = "(未跑)";
   try {
@@ -323,7 +366,7 @@ const t = (name, ok, detail = "") => {
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     const realError = console.error;
     try {
-      fs.writeFileSync(P, JSON.stringify({ fonts: ["fake"], ranges: [[57344, 57344]] })); // 旧格式：只有 ranges 没有 sig
+      fs.writeFileSync(P, JSON.stringify({ schema: 2, fonts: 1, ranges: [null], sig: "fake" })); // syntactically valid JSON, structurally corrupt ranges
       delete globalThis[CSTK]; delete globalThis[SIGK];
       globalThis[ASYNCK] = { checking: false, building: false };
       const buildLogs = [];
@@ -341,7 +384,14 @@ const t = (name, ok, detail = "") => {
       if (ok) await wait(3000); // Let concurrently started mutant builds finish logging.
       console.error = realError;
       const builds = buildLogs.filter((s) => s.includes("cmap cache:")).length;
-      t("旧格式缓存拒收并重建", rejected && ok, `rejected=${rejected}, sig=${typeof globalThis[SIGK]}`);
+      t("损坏磁盘缓存拒收并重建", rejected && ok, `rejected=${rejected}, sig=${typeof globalThis[SIGK]}`);
+      {
+        // The rebuild above is a real build, so the on-disk metadata is
+        // mutation-reachable (source label, fixture union).
+        const meta = JSON.parse(fs.readFileSync(P, "utf8"));
+        const hasAlt = (meta.ranges || []).some(([lo, hi]) => lo <= 0xe777 && 0xe777 <= hi);
+        t("重建缓存记录字体链来源", meta.schema === 2 && meta.source === "explicit" && meta.fonts >= 2 && hasAlt, JSON.stringify(meta).slice(0, 160));
+      }
       t("并发重建去重", builds === 1, `builds=${builds}`);
       globalThis[SIGK] = "__tampered__"; // 篡改 → reload 必须靠真实字体签名核验纠正
       let fixed = false;
@@ -364,7 +414,8 @@ const t = (name, ok, detail = "") => {
     } finally {
       // Restore console.error even when the rebuild or assertion setup throws.
       if (typeof realError === "function") console.error = realError;
-      // orig 无签名（假货/旧格式）时不还原——删除让下一会话重建真值，
+      // When orig is fake/legacy, do not restore it; deleting lets the next
+      // session rebuild truth instead of racing an async build back to poison.
       // 防止异步构建竞态把 fake 留在盘上毒害后续运行（第八轮判例）
       const origValid = orig !== null &&/"sig"/.test(orig);
       if (origValid) fs.writeFileSync(P, orig);

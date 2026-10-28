@@ -1,3 +1,6 @@
 AGENTS.md
 __pycache__/
 review.html
+
+# stray probe output from manual review runs
+rel-out.txt

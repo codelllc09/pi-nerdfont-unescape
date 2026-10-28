@@ -23,14 +23,14 @@ both directions:
 |---|---|
 | Escape restoration | `\uXXXX` / `\u{xxxxx}` → real glyph, outside code spans |
 | Code-span protection | fenced blocks **and** inline spans (CommonMark equal-length delimiters, incl. double-backtick wrapping) keep escapes literal — copy-paste safe for config files |
-| Visible substitution | codepoints with **no renderable glyph** (noncharacters, Tags, unassigned BMP, absent from your local fonts' cmap union, or whenever the cmap itself is unavailable) become visible `□U+FDD0` markers — never invisible |
+| Visible substitution | codepoints with **no renderable glyph** (noncharacters, Tags, unassigned BMP, absent from the configured terminal font chain, or whenever that chain is unavailable) become visible `□U+FDD0` markers — never invisible |
 | Evidence-only trace filling | when the text itself names a lost codepoint (Lua-style `-- U+E235` comments) a trailing `□` is appended; empty quote pairs are never touched (a legit `""` and a dropped char are bit-identical — undecidable, and we refuse to guess) |
 | Input auto-escaping | at-risk chars in **your outgoing messages** are auto-escaped (the channel strips them on input too) — the model actually receives what you pasted |
 | Stream drop detection | at-risk codepoints seen in `message_update` but missing from the final message are reported with codepoints |
-| Font ground truth | union of all installed fonts' cmaps, cached with signature-based invalidation; Linux / macOS / Windows paths |
+| Font ground truth | active terminal font/fallback cmaps, cached with signature-based invalidation; Linux uses the ordered fontconfig monospace chain, while `PI_NF_FONT_PATHS` provides an explicit cross-platform chain |
 | `[[nf:name]]` semantic markers (beta) | write `[[nf:python]]`, the extension resolves it against **your local fonts** at render time and warns visibly on unknown names; markers inside code spans stay literal |
 | `nerdfont_lookup` tool | query installed Nerd Font glyphs by keyword or codepoint; family-prioritized; includes baked starship defaults |
-| `render_preview` tool | monospace-grid layout renderer with exact terminal width arithmetic (CJK=2, PUA=1), dot leaders, frames |
+| `render_preview` tool | monospace-grid layout renderer with terminal-compatible Unicode width arithmetic (CJK/emoji=2, PUA=1), dot leaders, frames |
 
 ## Install
 
@@ -43,17 +43,42 @@ pi install npm:pi-nerdfont-unescape
 
 ## Runtime & testing dependencies
 
-The core extension is dependency-free TypeScript at runtime, but the glyph
+The extension has one small npm runtime dependency (`typebox`). The glyph
 ground truth (cmap cache), `nerdfont_lookup`, and `render_preview` shell out
 to `python3` with [fontTools](https://fonttools.readthedocs.io/) — when
 missing, substitution degrades to category-only judgement **with a visible
 warning** (never silent). The test suites require the same. On Windows,
 `python3` may not exist by that name; expose one (e.g. via `py -3` shim).
 
+On Linux, the extension reads fontconfig's ordered `monospace` fallback chain.
+On macOS, Windows, or terminals whose configured font differs from fontconfig,
+set `PI_NF_FONT_PATHS` to the actual font and fallback files (or directories),
+separated with the platform path separator. If the active chain cannot be
+identified, the extension deliberately shows `□U+XXXX` instead of guessing
+from unrelated installed fonts.
+
 ## Testing & the vision-verify workflow
 
-`tests/test-nerdfont-unescape.cjs` + `test-tools.cjs` — full regression suites (count grows with precedents) including
-every historical bug form.
+`tests/test-nerdfont-unescape.cjs` + `test-tools.cjs` — full regression suites
+(count grows with precedents) including every historical bug form. They build
+a tiny deterministic font fixture, so results do not depend on workstation
+fonts. GitHub CI runs both the regression and mutation suites.
+
+`npm run test:audit` proves the tests are real: every mutation of the
+extension must turn a specific test red. It prints one line per mutation with
+elapsed time and a live ETA, runs mutations in parallel (`--jobs`), and
+journals each verdict to `/tmp/pi-mutation-journal-<source-hash>.json` — an
+interrupted run resumes where it stopped, and any source edit invalidates the
+journal automatically (so a resumed run can never report a stale green).
+
+```bash
+npm run test:audit -- --only "M6[0-9]" --jobs 4   # targeted slice, seconds
+npm run test:audit -- --fresh                     # ignore the journal
+npm run test:audit -- --list                      # names only
+```
+
+All entry points are idempotent: temporary state lives under `/tmp`, keyed by
+pid or source hash, and is swept on the next run if a process was killed.
 
 **Rendering correctness is ultimately judged by pixels**: unit tests can
 lie green (two documented ways in the suite header). After significant
