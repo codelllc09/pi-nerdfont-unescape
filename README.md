@@ -2,17 +2,13 @@
 
 # pi-nerdfont-unescape
 
-Nerd Font icons in the Pi TUI: a way to ask for them that survives the output
-channel, and a visible `□U+XXXX` for anything the extension can tell is missing —
-instead of a blank you have no way to notice.
+An extension for pi that keeps Nerd Font icons intact in model replies.
 
-## Why you may need it
-
-Nerd Font icons are Unicode private-use characters, and model output channels
-drop them. There is no error and no warning: the icon is simply not there. This
-extension asks the model to write icons as ASCII escapes (`\uE235`) — plain text
-that tokenizers handle like any other characters — and turns them back into real
-glyphs when the answer arrives.
+Some models lose those icons while answering. A Nerd Font icon is a Unicode
+private-use character, and the model's output stream silently drops it: you ask
+for a Python icon and the place where it should be is empty — no error, nothing to
+notice. This extension asks the model to spell icons as plain text instead
+(`\uE235`), then turns them back into icons before the reply reaches you.
 
 ## Where it stops
 
@@ -21,14 +17,14 @@ visible. Precisely:
 
 | It does | It cannot |
 |---|---|
-| Icons the model writes as escapes (`\uE235`) survive and render | An icon the model writes as a raw character, dropped by the channel *before* the message arrives, leaves no trace to detect |
+| Icons the model writes as escapes (`\uE235`) survive and render | An icon the model writes as a raw character, dropped by the output stream *before* the message arrives, leaves no trace to detect |
 | A codepoint with no usable glyph becomes a visible `□U+XXXX` | If your terminal renders with a font outside the detected chain, a glyph can still come out as tofu — the check trusts the font it can read |
 | A drop visible *within* the stream is reported with codepoints | A drop that already happened upstream carries no signal |
 | Code blocks are never rewritten | — |
 | Your own message is escaped before sending | — |
 
 Short version: it fixes the loss it can see, and it says what it cannot see. It
-does not repair the model's output channel.
+does not repair the model's output stream.
 
 ## Install
 
