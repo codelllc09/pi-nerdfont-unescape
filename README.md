@@ -98,3 +98,7 @@ Tests, the mutation audit and the model-free TUI probes are covered in
 ## License
 
 MIT. Keep the copyright and license notice when you use it.
+
+The `nerdfont_lookup` tool embeds the default symbol table from
+[starship](https://starship.rs) (`starship print-config --default`, ISC license):
+only the module names and their codepoints, no starship code.

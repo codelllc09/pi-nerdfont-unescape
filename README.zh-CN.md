@@ -88,3 +88,6 @@ pi install npm:pi-nerdfont-unescape
 ## 许可证
 
 MIT。使用时请保留版权与许可证声明。
+
+`nerdfont_lookup` 内置了 [starship](https://starship.rs) 的默认符号表
+（`starship print-config --default`，ISC 许可）：只含模块名与对应码位，不含 starship 代码。
