@@ -36,7 +36,8 @@
 		"test:audit": "node tests/guard-layout.cjs && scripts/safe-run.sh node tests/mutation-audit.cjs",
 		"test:audit:light": "scripts/safe-run.sh node tests/mutation-audit.cjs --jobs 1",
 		"test:raw": "node tests/test-nerdfont-unescape.cjs && node tests/test-tools.cjs",
-		"guard": "node tests/guard-layout.cjs"
+		"guard": "node tests/guard-layout.cjs",
+		"prepublishOnly": "npm test"
 	},
 	"files": [
 		"nerdfont-unescape.ts",
@@ -44,6 +45,10 @@
 		"README.zh-CN.md",
 		"LICENSE",
 		"tests/",
-		"!tests/__pycache__"
-	]
+		"!tests/__pycache__",
+		"scripts/"
+	],
+	"engines": {
+		"node": ">=22"
+	}
 }

@@ -42,9 +42,13 @@ if command -v systemd-run >/dev/null 2>&1 && systemctl --user show-environment >
 fi
 
 # Fallback (no user manager): a best-effort address-space cap.
-echo "safe-run: systemd user scope unavailable, applying address-space cap" >&2
-# Best effort without cgroups: cap virtual memory (~1.5 GiB per node child) and
-# disable core dumps so a runaway cannot fill swap either.
-ulimit -v $((1536 * 1024)) 2>/dev/null || true
+echo "safe-run: systemd user scope unavailable, capping the V8 heap instead" >&2
+# Without cgroups the best we can do is bound the V8 heap. Prefer NODE_OPTIONS
+# over `ulimit -v`: the address-space limit does not track heap growth (V8
+# reserves a large VA up front), so it either does nothing useful or breaks on
+# platforms that map more, and NODE_OPTIONS also reaches child processes.
+# (An earlier comment here claimed a verified ulimit failure; that was a
+# misdiagnosis of a missing directory — corrected in round 21.)
+export NODE_OPTIONS="${NODE_OPTIONS:-} --max-old-space-size=768"
 ulimit -c 0 2>/dev/null || true
 exec "$@"
