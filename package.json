@@ -1,6 +1,6 @@
 {
 	"name": "pi-nerdfont-unescape",
-	"version": "0.3.0",
+	"version": "0.3.1",
 	"description": "Observable Nerd Font icon output for the Pi TUI: an ASCII escape protocol, code-span protection, visible substitution for undrawable codepoints, input escaping, stream drop detection, glyph lookup and layout tools",
 	"license": "MIT",
 	"keywords": [
@@ -44,8 +44,8 @@
 	"files": [
 		"nerdfont-unescape.ts",
 		"README.md",
-		"README.zh-CN.md",
 		"DEVELOPMENT.md",
+		"docs/",
 		"tsconfig.json",
 		"LICENSE",
 		"tests/",

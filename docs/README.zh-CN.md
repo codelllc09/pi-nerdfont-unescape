@@ -1,4 +1,4 @@
-[English](./README.md) · **简体中文**
+[English](../README.md) · **简体中文**
 
 # pi-nerdfont-unescape
 
@@ -81,7 +81,7 @@ pi install npm:pi-nerdfont-unescape
 
 ## 开发
 
-测试、变异审计、无模型的 TUI 探针，见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
+测试、变异审计、无模型的 TUI 探针，见 [DEVELOPMENT.md](../DEVELOPMENT.md)。
 
 ## 许可证
 
