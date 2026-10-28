@@ -95,6 +95,22 @@ CHECK=1 scripts/tui-probe/run.sh    # assert the demo message's expectations
 Note for anyone extending this: never redirect stdout inside the tmux command —
 pi detects a non-TTY and silently degrades to plain text.
 
+`scripts/tui-probe/pixel.sh` goes one level deeper and captures **pixels**: GNOME
+Wayland has no silent CLI screenshot (the Shell D-Bus method is AccessDenied since
+43, the portal always asks), and Weston's own screenshooter is refused
+("unauthorized"), so it runs Xvfb — a virtual X server — starts the user's WezTerm
+inside it (software front end, same fonts), drives the same fake model, and grabs
+the screen with ImageMagick. Nothing appears on the real desktop.
+
+```bash
+npm run tui:pixel            # writes scripts/tui-probe/out.png
+```
+
+Two traps learned the hard way: unset `WAYLAND_DISPLAY` (otherwise WezTerm opens on
+the real desktop instead of the virtual X screen) and capture with
+`import -window root -screen` (plain `-window root` reads the root window, which is
+black where child windows are).
+
 ### Resource guards (why `npm test` is wrapped)
 
 Every suite runs through `scripts/safe-run.sh`, which puts the workload in its

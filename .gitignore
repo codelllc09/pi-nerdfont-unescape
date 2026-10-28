@@ -4,3 +4,6 @@ review.html
 
 # stray probe output from manual review runs
 rel-out.txt
+
+# TUI probe artifacts
+scripts/tui-probe/out.png

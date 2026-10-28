@@ -37,7 +37,8 @@
 		"guard": "node tests/guard-layout.cjs",
 		"prepublishOnly": "npm test",
 		"tui:probe": "scripts/tui-probe/run.sh",
-		"tui:check": "CHECK=1 scripts/tui-probe/run.sh"
+		"tui:check": "CHECK=1 scripts/tui-probe/run.sh",
+		"tui:pixel": "scripts/tui-probe/pixel.sh"
 	},
 	"files": [
 		"nerdfont-unescape.ts",
