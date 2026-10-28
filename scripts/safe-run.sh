@@ -29,7 +29,9 @@ MSG
   exit 75
 fi
 
-if command -v systemd-run >/dev/null 2>&1 && systemctl --user is-system-running >/dev/null 2>&1; then
+# `is-system-running` says "degraded" on otherwise healthy desktops; probing the
+# user manager's environment is the reliable test for a usable scope.
+if command -v systemd-run >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
   # --scope: same terminal, but the workload lives in its own cgroup with a hard
   # ceiling; MemoryOOMGroup kills the whole scope instead of picking a stranger.
   exec systemd-run --user --scope --quiet \
@@ -40,5 +42,9 @@ if command -v systemd-run >/dev/null 2>&1 && systemctl --user is-system-running 
 fi
 
 # Fallback (no user manager): a best-effort address-space cap.
-echo "safe-run: systemd user scope unavailable, using ulimit fallback" >&2
+echo "safe-run: systemd user scope unavailable, applying address-space cap" >&2
+# Best effort without cgroups: cap virtual memory (~1.5 GiB per node child) and
+# disable core dumps so a runaway cannot fill swap either.
+ulimit -v $((1536 * 1024)) 2>/dev/null || true
+ulimit -c 0 2>/dev/null || true
 exec "$@"

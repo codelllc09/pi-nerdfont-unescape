@@ -304,6 +304,46 @@ if (argv.includes("--list")) {
   process.exit(0);
 }
 
+// ── IDENTITY PREFLIGHT ─────────────────────────────────────────
+// 2026-10-29: the regression suite had been overwritten by this very driver, so
+// the audit "ran the suite" by spawning a copy of itself — recursively, creating
+// thousands of temp dirs until the cgroup killed it. Verify each suite is a
+// suite BEFORE spawning anything: cheap, and it makes that failure impossible.
+const identityErrors = [];
+for (const [id, file] of Object.entries(SUITES)) {
+  let text = "";
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch (e) {
+    identityErrors.push(`suite ${id} unreadable: ${e.message}`);
+    continue;
+  }
+  if (!text.includes("const t = (name")) identityErrors.push(`suite ${id} has no t() tester: ${file}`);
+  if (text.includes("const MUTATIONS")) identityErrors.push(`suite ${id} contains the audit driver (identity swap): ${file}`);
+  if (text.includes("runSuiteAsync")) identityErrors.push(`suite ${id} contains runSuiteAsync (self-spawn risk): ${file}`);
+}
+if (identityErrors.length) {
+  identityErrors.forEach((e) => console.error(`✗ ${e}`));
+  console.error("审计中止：测试文件身份不对（先跑 npm run guard）");
+  process.exit(1);
+}
+
+// Sweep leftovers from killed runs of MY OWN prefixes only, so a machine that
+// hit an OOM mid-audit does not accumulate thousands of temp dirs.
+try {
+  const now = Date.now();
+  const mine = /^(pi-nf-audit-|pi-mutated-.*\.ts$|pi-mutation-journal-.*\.json)/;
+  let swept = 0;
+  for (const name of fs.readdirSync("/tmp")) {
+    if (!mine.test(name)) continue;
+    const full = path.join("/tmp", name);
+    try {
+      if (now - fs.statSync(full).mtimeMs > 600000) { fs.rmSync(full, { recursive: true, force: true }); swept++; }
+    } catch {}
+  }
+  if (swept > 0) console.log(`清扫过期临时产物 ${swept} 项（>10 分钟前的自有前缀）`);
+} catch {}
+
 // ── ANCHOR VALIDATION FIRST ────────────────────────────────────
 // A stale anchor used to abort the run AFTER ~20 minutes of unrelated work.
 // Validate every anchor before spawning anything: failures surface in ~1s.

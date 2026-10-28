@@ -453,14 +453,17 @@ const t = (name, ok, detail = "") => {
     let out24 = "(异常)";
     try {
       process.env.PATH = "";
-      out24 = await end("x [[nf:python]] y");
+      // A name nothing has resolved yet: "python" may already be cached from an
+      // earlier section, which would bypass the resolver and make this test
+      // order-dependent (caught by the audit baseline under SKIP_SLOW).
+      out24 = await end("x [[nf:zzz-never-resolved]] y");
     } finally {
       process.env.PATH = savedPath;
     }
     const w = notes.find((n) => n.includes("nerdfont-unescape:")) ?? "";
     t(
       "resolver不可用不谎报未知名",
-      out24.includes("[[nf:python]]") && w.includes("could not be resolved") && !w.includes("no such name"),
+      out24.includes("[[nf:zzz-never-resolved]]") && w.includes("could not be resolved") && !w.includes("no such name"),
       w.slice(0, 130),
     );
   }
