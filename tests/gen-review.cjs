@@ -65,8 +65,6 @@ const CASES = [
     expect: "显示为单反斜杠字面 \\ue235，不出现真字符", mut: "M3" },
   { sec: "② 字面逃生舱", name: "六位逃生舱保持字面", kind: "end", in: "字面 \\\\u{100000} 保持",
     expect: "六位双反斜杠同样字面化", mut: "M3 M24" },
-  { sec: "② 字面逃生舱", name: "围栏内双反斜杠字节保真", kind: "end", in: "```\nx = \\\\ue235\n```",
-    expect: "围栏内代码逐字节不动（逃生舱不碰代码）", mut: "M7" },
   { sec: "③ 不可见码位 → 可见标记", name: "非字符", kind: "end", in: "\\ufdd0 \\u{e0041} \\u0378",
     expect: "U+FDD0 → □U+FDD0（可见标记，绝不隐形）", mut: "M4" },
   { sec: "③ 不可见码位 → 可见标记", name: "Tags(括号形式)", kind: "end", in: "\\ufdd0 \\u{e0041} \\u0378",
@@ -75,12 +73,14 @@ const CASES = [
     expect: "U+0378 → □U+0378", mut: "M4" },
   { sec: "③ 不可见码位 → 可见标记", name: "cmap判定替换", kind: "end", in: "\\ue5ee",
     expect: "E5EE 不在本机字体 cmap 并集 → □U+E5EE（环境相关：换字体会翻转，非跨机固定答案）", mut: "M4" },
-  { sec: "④ 补框 + 防误报", name: "空引号补框", kind: "end", in: "图标是 '' 空引号",
-    expect: "图标语境下 '' 疑似丢字痕迹 → '□'（提示性补框，非确证通道所致）", mut: "M5" },
-  { sec: "④ 补框 + 防误报", name: "行内段内不补框", kind: "end", in: "图标 `x = ''` 段内不补框 \\ue235 段外",
-    expect: "`x = ''` 是代码字面量 → 原样保留不补框（复制保真）", mut: "M6" },
-  { sec: "④ 补框 + 防误报", name: "围栏内不补框", kind: "end", in: "图标\n```\n''\n```\n\\ue235",
-    expect: "围栏内 '' 是代码 → 原样保留", mut: "M7b" },
+  { sec: "④ 观测层（证据性补框 + 保守降级）", name: "空引号永不被改写", kind: "end", in: "icon value = '' 与 \"\"",
+    expect: "合法空串与丢字产物比特级相同——不猜、不改、不告警（噪音=告警疲劳=另一种静默）", mut: "M56" },
+  { sec: "④ 观测层（证据性补框 + 保守降级）", name: "Lua注释补框(证据性)", kind: "end", in: "icon lost: -- U+E235",
+    expect: "文本自带码位=确凿证据 → 尾部补 □", mut: "M5" },
+  { sec: "④ 观测层（证据性补框 + 保守降级）", name: "围栏内Lua不补", kind: "end", in: "```内 -- U+E235```",
+    expect: "代码里的码位注释是字面量，不补", mut: "M7" },
+  { sec: "④ 观测层（证据性补框 + 保守降级）", name: "cmap未知保守替换", kind: "end", in: "删缓存后 \\ue235",
+    expect: "字体状态未知=二维表第4行 → □U+E235（拒绝乐观还原）", mut: "M57" },
   { sec: "⑤ 围栏保护", name: "围栏内保持字面", kind: "end", in: '外面 \\ue235\n```\nx = "\\ue0b0"\n```\n后 \\uf308',
     expect: '围栏内 "\\ue0b0" 保持字面（复制保真）', mut: "M7" },
   { sec: "⑤ 围栏保护", name: "异种围栏不闭合", kind: "end", in: "```\n内 \\ue0b0\n~~~\n仍内 \\ue0b0\n```\n外 \\ue235",
@@ -246,6 +246,15 @@ const CASES = [
         let src = c.in;
         if (c.name === "旧Map遗留安全迁移") { globalThis[Symbol.for("pi.nerdfontUnescape.nfCache")] = new Map([["python", 0xe0a0]]); src = "[[nf:python]]"; }
         else if (c.name === "非法标记保留+点名") src = "[[nf:bad name]] 与 [[nf:名称]]";
+        else if (c.name === "cmap未知保守替换") {
+          const CSTK = Symbol.for("pi.nerdfontUnescape.cmap");
+          const saved = globalThis[CSTK];
+          delete globalThis[CSTK];
+          const out9 = await end("\\ue235 字体未知");
+          globalThis[CSTK] = saved;
+          src = null;
+          actual = `原样: ${out9}\n(保守=${out9.includes("□U+E235")})`;
+        }
         else if (c.name === "空名与超长名告警") src = "[[nf:]] 与 [[nf:" + "a".repeat(41) + "]] 与 [[nf:" + "b".repeat(65) + "]]";
         else if (c.name === "双未缓存名批量解析") {
           const st = globalThis[Symbol.for("pi.nerdfontUnescape.nfCache")];

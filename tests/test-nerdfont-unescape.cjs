@@ -79,21 +79,22 @@ const t = (name, ok, detail = "") => {
   a = await end("字体没有的 \\ue5ee");
   t("cmap判定替换", a.includes("□U+E5EE"), JSON.stringify(a));
 
-  console.log("── ④ 补框 + 防误报");
-  a = await end("图标是 '' 空引号");
-  t("空引号补框", a.includes("'□'"), JSON.stringify(a));
-  // 引号对不贴反引号（`x = ''`）：防误报规则 b) 不再独立拦截，
-  // 行内段保护与否只剩 protectedRanges 跳过逻辑——这正是要测的东西
-  a = await end("图标 `x = ''` 段内不补框 \\ue235 段外");
-  t("行内段内不补框", a.includes("`x = ''`"), JSON.stringify(a));
-  a = await end("图标\n```\n''\n```\n\\ue235");
-  t("围栏内不补框", a.includes("''"), JSON.stringify(a));
-
-  // 2026-10-28 外部评审判例：逃生舱曾改写围栏内代码（复制保真被破坏）
-  const fenceHatchIn = "```\nx = \\\\ue235\n```";
-  let rFH = await h["message_end"]({ message: { role: "assistant", content: [{ type: "text", text: fenceHatchIn }] } }, ctx);
-  const fenceHatchOut = rFH?.message?.content?.[0]?.text ?? fenceHatchIn;
-  t("围栏内双反斜杠字节保真", fenceHatchOut === fenceHatchIn, JSON.stringify(fenceHatchOut));
+  console.log("── ④ 观测层（证据性补框 + 保守降级）");
+  a = await end("icon value = '' 和 \"\" 与 ` ` 保持原样");
+  t("空引号永不被改写", !a.includes("□"), JSON.stringify(a));
+  a = await end("icon lost: -- U+E235");
+  t("Lua注释补框(证据性)", a.includes("-- U+E235 □"), JSON.stringify(a));
+  // 输入不含该码位的其他形态——合规检查不能代偿，围栏保护独立受审
+  a = await end("icon\n```\n-- U+E235\n```\n尾部无转义");
+  t("围栏内Lua不补", (a.split("\n")[2] ?? "") === "-- U+E235", JSON.stringify(a));
+  {
+    const CSTK = Symbol.for("pi.nerdfontUnescape.cmap");
+    const savedCmap = globalThis[CSTK];
+    delete globalThis[CSTK];
+    a = await end("\\ue235 字体未知");
+    globalThis[CSTK] = savedCmap; // 恢复现场
+    t("cmap未知保守替换", a.includes("□U+E235") && !hasCp(a, 0xe235), JSON.stringify(a));
+  }
 
   console.log("── ⑤ 围栏保护");
   a = await end('外面 \\ue235\n```\nx = "\\ue0b0"\n```\n后 \\uf308');

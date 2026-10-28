@@ -33,6 +33,13 @@ const t = (name, ok, detail = "") => {
 const run = (f) => f().catch((e) => { console.error("崩溃:", e); process.exit(1); });
 
 run(async () => {
+  // cmap readiness: suite2 historically never called session_start and rode
+  // the OPTIMISTIC restore path with cmap undefined — the conservative
+  // font-unknown rule (□U+XXXX) exposed it. Start + wait like suite1.
+  await handlers["session_start"]?.({}, ctx);
+  for (let i = 0; i < 10 && !globalThis[Symbol.for("pi.nerdfontUnescape.cmap")]; i++) {
+    await new Promise((r) => setTimeout(r, 3000));
+  }
   console.log("── ⑨ nerdfont_lookup 工具");
   t("已注册", !!tools.nerdfont_lookup && !!tools.render_preview, Object.keys(tools).join(","));
   if (tools.nerdfont_lookup) {

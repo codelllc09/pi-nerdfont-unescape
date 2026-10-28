@@ -371,7 +371,10 @@ function unescapeAtRisk(text: string): {
       }
       const cp = parseInt(brace ?? plain!, 16);
       if (isAtRisk(cp)) {
-        const notInFonts = cmap !== undefined && !inRanges(cmap, cp);
+        // Two-dimensional decision (channel-risk x font-support): when cmap is
+        // UNAVAILABLE the font state is unknown — treat as no-glyph (visible
+        // marker), never optimistically restore (a tofu/blank would follow)
+        const notInFonts = cmap === undefined || !inRanges(cmap, cp);
         if (isInherentlyInvisible(cp) || notInFonts) {
           substituted.push(cp);
           return visibleTag(cp); // invisible or no local glyph: visible marker, refuse silent failure
@@ -606,96 +609,30 @@ function splitByInlineSpans(line: string): Array<{ text: string; protected: bool
 }
 
 // Traces → placeholder filling (returns replaced text and fill count)
-const PAIR = /(['"`])([ \t]*)\1/g; // empty quote pairs (whitespace-only inside)
-const isQuote = (c: string) => c === "'" || c === '"' || c === "`";
-
 function tofuFill(text: string): { text: string; filled: number; cps: (number | null)[] } {
+  // Evidence-only fill layer (observation tier, never guesses):
+  //   - empty quote/backtick pairs are NOT rewritten (2026-10-28 review): a
+  //     legit "" and a channel-dropped PUA char between quotes produce
+  //     IDENTICAL text — undecidable in principle; the escape protocol and
+  //     [[nf:]] markers carry real codepoints, guessing from fragments is
+  //     what this project refuses to do
+  //   - Lua-style codepoint comments (-- U+E235) DO carry a concrete
+  //     codepoint: fill a trailing box, but only OUTSIDE fences/inline code
   let filled = 0;
-  const cps: (number | null)[] = []; // codepoint per fill (empty pairs unknowable → null)
-  // (1) Empty quote/backtick pairs: '' "" `` → '□'
-  //     Pair-by-pair scan (not one regex), four-fold false-positive armor:
-  //     a) markdown fence lines (```/~~~ prefix) skipped whole;
-  //     b) pseudo-pairs inside same-char runs ('''、```) skipped: any quote
-  //        glued before / same-kind quote glued after → no fill;
-  //     c) a □ glued before the pair (already filled or historical damage) →
-  //        skip: idempotent, no stacking;
-  //     d) a backtick pair enclosing only whitespace yet touching other backticks
-  //        is a quoting construct (e.g. the `` `` `` wrapper of ```), skip.
-  let tfFenceOpen: { ch: string; len: number } | null = null;
-  text = text
-    .split("\n")
-    .map((line) => {
-      const tfm = line.match(/^[ \t]*(`{3,}|~{3,})/);
-      if (tfm) {
-        if (!tfFenceOpen) tfFenceOpen = { ch: tfm[1][0], len: tfm[1].length };
-        else if (tfm[1][0] === tfFenceOpen.ch && tfm[1].length >= tfFenceOpen.len) tfFenceOpen = null;
-        return line; // (a) fence line (closes only on same char, >= length)
-      }
-      if (tfFenceOpen) return line; // fenced content: literal code, not a loss trace
-      // (e) wrapper-structure prescan: same-quote runs + word/PUA-only middle + closing run.
-      //     Flanking empty pairs are wrappers, not loss traces — structure beats keywords
-      const wraps: Array<[number, number]> = [];
-      const WRAP = /(['"`])\1+([\p{L}\p{N}\p{Co}]+)\1\1+/gu;
-      for (const wm of line.matchAll(WRAP)) {
-        const q2 = wm[1];
-        let close = 0;
-        let f = wm[0];
-        while (f.endsWith(q2)) {
-          f = f.slice(0, -1);
-          close++;
-        }
-        const open = f.length - wm[2].length; // closing run already stripped from f
-        const cs = wm.index! + open + wm[2].length;
-        wraps.push([wm.index!, wm.index! + open - 1], [cs, cs + close - 1]);
-      }
-      // Inline code-span ranges: a PAIR hit inside one is literal code, not a loss trace
-      const protectedRanges: Array<[number, number]> = [];
-      {
-        let cursor = 0;
-        for (const seg of splitByInlineSpans(line)) {
-          if (seg.protected) protectedRanges.push([cursor, cursor + seg.text.length]);
-          cursor += seg.text.length;
-        }
-      }
-      let out = "";
-      let last = 0;
-      let m: RegExpExecArray | null;
-      PAIR.lastIndex = 0;
-      while ((m = PAIR.exec(line))) {
-        const q = m[1];
-        const start = m.index;
-        const end = PAIR.lastIndex;
-        if (protectedRanges.some(([a, b]) => start >= a && start < b)) continue;
-        const before = start > 0 ? line[start - 1] : "";
-        const after = end < line.length ? line[end] : "";
-        let skip =
-          wraps.some(([a2, b2]) => start >= a2 && start <= b2) || // (e) wrapper flanks
-          isQuote(before) ||
-          after === q ||
-          before === TOFU; // b) c)
-        if (q === "`" && !skip) {
-          if (/[ \t]*`$/.test(line.slice(0, start))) skip = true; // (d) preceding backtick
-          else if (/^[ \t]*`/.test(line.slice(end))) skip = true; // (d) following backtick
-        }
-        if (skip) continue;
-        out += line.slice(last, start) + q + TOFU + q;
-        last = end;
-        filled++;
-        cps.push(null); // codepoint unknown (char lost without a trace)
-      }
-      return out + line.slice(last);
-    })
-    .join("\n");
-  // (2) Lua-style codepoint comment with no trailing glyph: -- U+E235 → -- U+E235 □
-  text = text.replace(/(--[ \t]*U\+[0-9A-Fa-f]{4,5})[ \t]*$/gm, (m) => {
-    const hex = /U\+([0-9A-Fa-f]{4,5})/.exec(m);
-    const cp = hex ? parseInt(hex[1], 16) : null;
-    // Compliance check: if that codepoint already appears in this message (restored escape), no fill needed
-    if (cp !== null && text.includes(String.fromCodePoint(cp))) return m;
-    filled++;
-    cps.push(cp);
-    return m + " " + TOFU;
-  });
+  const cps: (number | null)[] = [];
+  const LUALINE = /(--[ \t]*U\+[0-9A-Fa-f]{4,5})[ \t]*$/;
+  text = walkUnprotected(text, (seg) =>
+    seg.replace(LUALINE, (m) => {
+      const hex = /U\+([0-9A-Fa-f]{4,5})/.exec(m);
+      const cp = hex ? parseInt(hex[1], 16) : null;
+      // Compliance check: the codepoint already present (e.g. a restored
+      // escape) means nothing was lost — no fill
+      if (cp !== null && text.includes(String.fromCodePoint(cp))) return m;
+      filled++;
+      cps.push(cp);
+      return m + " " + TOFU;
+    }),
+  );
   return { text, filled, cps };
 }
 
