@@ -210,7 +210,7 @@ const t = (name, ok, detail = "") => {
   await h["message_start"]?.({}, {});
   const rInv = await h["message_end"]({ message: { role: "assistant", content: [{ type: "text", text: inv }] } }, ctx);
   const invOut = rInv?.message?.content?.[0]?.text ?? inv;
-  t("非法标记保留+点名", invOut === inv && notes.some((n) => n.includes("语法不合法") && n.includes("bad name")), JSON.stringify(notes));
+  t("非法标记保留+点名", invOut === inv && notes.some((n) => n.includes("invalid marker syntax") && n.includes("bad name")), JSON.stringify(notes));
 
   // vscode 走子串（别名反伤判例）
   const resolved = (x, cp) => !x.startsWith("崩溃:") && !x.includes("[[nf:") && (hasCp(x, cp) || x.includes(`□U+${cp.toString(16).toUpperCase()}`));
@@ -236,7 +236,7 @@ const t = (name, ok, detail = "") => {
   notes.length = 0;
   await safeEnd("[[nf:]] 与 [[nf:" + "a".repeat(41) + "]] 与 [[nf:" + "b".repeat(65) + "]]");
   const n41 = "a".repeat(41), n65 = "b".repeat(65);
-  const warnMsg = notes.find((n) => n.includes("语法不合法")) ?? "";
+  const warnMsg = notes.find((n) => n.includes("invalid marker syntax")) ?? "";
   t("空名与超长名告警", warnMsg.includes("[[nf:]]") && warnMsg.includes(n41) && warnMsg.includes(n65), JSON.stringify(notes));
   {
     const st = globalThis[Symbol.for("pi.nerdfontUnescape.nfCache")];
@@ -277,7 +277,7 @@ const t = (name, ok, detail = "") => {
   notes.length = 0;
   await safeEnd("[[nf:" + "c".repeat(121) + "]] 与 [[nf:" + "d".repeat(200) + "]]");
   {
-    const warn2 = notes.find((n) => n.includes("语法不合法")) ?? "";
+    const warn2 = notes.find((n) => n.includes("invalid marker syntax")) ?? "";
     t("121/200字名告警", warn2.includes("c".repeat(121)) && warn2.includes("d".repeat(200)), JSON.stringify(notes).slice(0, 80));
   }
 
@@ -327,11 +327,11 @@ const t = (name, ok, detail = "") => {
       try {
         process.env.PATH = "";
         await h["session_start"]?.({}, ctx);
-        for (let i = 0; i < 20 && !notes.some((n) => n.includes("字体签名核验失败")); i++) await wait(100);
+        for (let i = 0; i < 20 && !notes.some((n) => n.includes("font signature check failed")); i++) await wait(100);
       } finally {
         process.env.PATH = savedPath;
       }
-      t("签名核验失败留痕", notes.some((n) => n.includes("字体签名核验失败") && n.includes("[warning]")), JSON.stringify(notes));
+      t("签名核验失败留痕", notes.some((n) => n.includes("font signature check failed") && n.includes("[warning]")), JSON.stringify(notes));
     } finally {
       // Restore console.error even when the rebuild or assertion setup throws.
       if (typeof realError === "function") console.error = realError;

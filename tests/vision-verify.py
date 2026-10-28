@@ -1,33 +1,37 @@
 #!/usr/bin/env python3
-r"""vision-verify.py — 视觉端到端验证（本仓库最重要的测试手段）
+r"""vision-verify.py — vision end-to-end verification (this repo's decisive test)
 
-用法: python3 tests/vision-verify.py <截图.png> [额外提示]
+Usage: python3 tests/vision-verify.py <screenshot.png> [extra prompt]
 
-为什么存在：单元测试验证的是"我以为的逻辑"，只有终端里实际渲染出来的
-像素才是真相。2026-10-27 判例：v1 行内保护的单测全绿，但真实消息使用
-双反引号包裹形态，绕过保护——唯一抓到真相的是视觉模型对截图的描述。
-（配套教训：JS 正则 \uXXXX 只吃 4 位十六进制；双反斜杠输入走的是字面
-逃生舱路径，测不到保护逻辑——两种"假绿"成因见 test-nerdfont-unescape.cjs）
+Why it exists: unit tests verify the logic you THOUGHT of; only the pixels
+actually rendered in the terminal are the truth. 2026-10-27 precedent: the
+v1 inline protection suite was all green, yet a real message using
+double-backtick wrapping bypassed it — the only thing that caught the truth
+was a vision model describing the screenshot. (Companion lessons: JS regex
+\uXXXX takes exactly 4 hex digits; a double-backslash input rides the
+literal hatch and tests nothing — both fake-green modes are documented in
+test-nerdfont-unescape.cjs.)
 
-本脚本的存在前提：**会话主模型是纯文本的**（agent 自己看不了图）。
-若会话模型能看图，不要跑本脚本——agent 用 read 工具直接读截图即可
-（判断方法零成本：读一张 png，pi 会明说 "Current model does not
-support images"；能读就是能看）。
+Prerequisite: the session model must be text-only (the agent itself cannot
+see images). If the session model CAN see images, do not run this script —
+the agent reads the screenshot directly (probing is free: read a png and
+pi will state plainly whether images are supported).
 
-模型配置（按优先级，fork 本仓库请用 ① 或 ② 设置你自己的）：
-  ① 环境变量  PI_VISION_MODEL / PI_VISION_BASE_URL / PI_VISION_API_KEY
-  ② 配置文件  ~/.config/pi-nerdfont-unescape/vision.json
-              {"model": "...", "base_url": "...", "api_key": "..."}
-              （任何 OpenAI 兼容端点均可；api_key 也可省略而用环境变量注入）
-  ③ 兜底默认  读 Pi 的 ~/.pi/agent/auth.json（zai-coding-cn）+
-              coding 端点 + glm-5.3-flash（本机默认，视觉可用且廉价）
-候选拒图（参数类 4xx）或空响应时自动降级下一候选，stderr 留痕不静默。
+Model config (priority order; forks should use (1) or (2)):
+  1. env vars   PI_VISION_MODEL / PI_VISION_BASE_URL / PI_VISION_API_KEY
+  2. config     ~/.config/pi-nerdfont-unescape/vision.json
+                {"model": ..., "base_url": ..., "api_key": ...}
+                (any OpenAI-compatible endpoint; partial keys are legal and
+                merge over the fallback)
+  3. fallback   Pi's own credentials (zai-coding-cn) + glm-5.3-flash, with
+                glm-4.6v as a same-endpoint second candidate (flash's
+                reasoning tokens intermittently exhaust max_tokens).
+A rejected image or an empty response demotes to the next candidate,
+leaving a trace on stderr — never silent.
 
-⚠ 视觉验证的输入必须是**截图（像素）**。禁止把会话存档文本、断言输出、
-还原后的文本发给视觉模型冒充验证——文本验证不了渲染（v1 判例：存档
-文本看着全对，像素上保护已被绕过）。
-
-流程：截图粘贴保存到 /tmp → 本脚本调视觉模型描述 → 与预期比对。
+Red line: vision checks take PIXELS (screenshots) as input. Feeding
+extracted/restored text proves nothing about rendering (v1 precedent:
+the archived text looked perfect while the pixels showed the bypass).
 """
 import base64
 import json
@@ -100,12 +104,10 @@ def candidate_chain():
         chain.append(base)
     # 机器第二兜底：flash 系 reasoning 间歇性耗尽 max_tokens（多轮实测），
     # 同端点挂 4.6v 兜底避免单点
-    backup = dict(base or {})
     if base:
-        backup["model"] = "glm-4.6v"
-        if backup.get("model") != merged.get("model") and backup["model"] != base["model"] or True:
-            if backup["model"] != merged.get("model"):
-                chain.append(backup)
+        backup = dict(base, model="glm-4.6v")
+        if backup["model"] != merged.get("model"):
+            chain.append(backup)
     return chain
 
 

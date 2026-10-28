@@ -1,12 +1,13 @@
 /**
  * lib.cjs — 测试共享基础设施：定位 pi 安装、加载被测扩展。
  *
- * 可移植性（GPT 评审 2026-10-28 判例：测试不得硬编码用户名/版本路径）：
- *   ① env PI_CODING_AGENT_DIR 显式指定
- *   ② ~/.local/share/pi-node/current（pi update 维护的稳定符号链接）
- *   ③ ~/.local/share/pi-node 下 node-v 开头的版本目录降序扫描（写法避开
- *      注释内 “星号斜杠” 提前闭合——陷阱家族 #5 判例）
- *   全部落空 → 明确报错退出，绝不静默跑错对象
+ * Portability (GPT review 2026-10-28: tests must not hardcode user/version
+ * paths). Resolution order:
+ *   1. env PI_CODING_AGENT_DIR (explicit)
+ *   2. ~/.local/share/pi-node/current (stable symlink maintained by pi update)
+ *   3. node-v* version dirs under pi-node, newest first (phrased to avoid an
+ *      early "star slash" comment close — trap-family case #5)
+ * All missing → fail loudly, never silently test the wrong target.
  */
 const fs = require("fs");
 const os = require("os");
@@ -23,7 +24,7 @@ function piRoot() {
   for (const c of candidates) {
     if (fs.existsSync(path.join(c, "dist/index.js"))) return c;
   }
-  throw new Error("pi-coding-agent 安装目录未找到；请 export PI_CODING_AGENT_DIR=/path/to/pi-coding-agent");
+  throw new Error("pi-coding-agent install dir not found; export PI_CODING_AGENT_DIR=/path/to/pi-coding-agent");
 }
 
 function extPath() {

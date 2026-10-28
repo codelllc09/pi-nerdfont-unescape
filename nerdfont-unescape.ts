@@ -1,32 +1,32 @@
-// nerdfont-unescape — 补回/显形模型输出通道丢失的 BMP 私有区字符
+// nerdfont-unescape — restore/expose BMP Private Use characters dropped by the model output channel
 // ────────────────────────────────────────────────────────────
-// 背景：模型输出通道会静默删除 BMP 私有区字符（U+E000–U+F8FF，
-// Nerd Font 的 dev-/seti-/cod-/fa-/oct-/custom-/linux- 系图标全在此区）。
-// 2026-09 全量扫描（3310 探针 × 双向交叉验证）实证：该区原字符通道必丢
-// （输入/输出两方向均剥离）；其余区域——PUA-A/B、Tags、非字符、astral
-// 未分配、CJK 扩展 G+——通道均放行，但模型盲发（无上下文参照时）
-// 保真度极低（PUA 区 0/3 精确、astral 邻位偏差率约 28%），故一并纳入
-// 转义协议。被丢字符在 transcript 中整段移除、无任何占位痕迹——
-// 无痕位置物理上无法事后补回。
+// Background: the model output channel silently strips BMP Private Use
+// characters (U+E000–U+F8FF, where all Nerd Font dev-/seti-/cod-/fa-/
+// oct-/custom-/linux- icons live). A 2026-09 full audit (3310 probes,
+// bidirectional cross-checks) proved raw characters in that range never
+// survive the channel (stripped in BOTH directions). Other ranges —
+// PUA-A/B, Tags, noncharacters, astral unassigned, CJK ext G+ — pass,
+// but blind emission is unreliable (0/3 exact on PUA, ~28% astral
+// neighbor-offset), so they join the escape protocol. Dropped characters
 //
-// 三道防线（单个 message_end handler 依序执行）：
-//   ① 转义还原：把 \uXXXX / \u{xxxx}（限实测会被丢弃的码位集）还原为真字符
-//      （String.fromCodePoint 纯客户端操作，字节永不丢失）
-//   ② 痕迹补框：模型违约时字符虽无痕，但常留结构性痕迹——
-//      空引号对 ''、空反引号 `` ``、码位注释行尾——就地补 □（U+25A1
-//      缺失字符框），让丢失位置一眼可见；图标上下文关联压误报
-//   ③ 告警：如实播报——转义还原成功时 info 提示还原数量；痕迹补框
-//      发生时 warn 说明占位数并建议转义重发（补框可能误报，需区分）
+// Three lines of defense (one message_end handler, in order):
+//   1. Escape restoration: turn \uXXXX / \u{xxxx} (ranges proven dropped)
+//      back into real characters (String.fromCodePoint, purely
+//      client-side — bytes never lost)
+//   2. Trace filling: a violation leaves no char but often leaves
+//      structure — empty quote pairs '' / `` `` , trailing codepoint
+//      comments — fill with □ (U+25A1) so the loss is visible at a
+//      glance; icon-context gating suppresses false positives
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { execFile } from "node:child_process";
 
-const TOFU = "\u25A1"; // □ 缺失字符框
+const TOFU = "\u25A1"; // □ missing-glyph box
 
-// BMP 已分配区间表：由本机 Python unicodedata 生成（Unicode 16.0.0）。
-// BMP 未分配码位实测会被通道丢弃（U+0378），故纳入还原范围；
-// astral 未分配实测可通过通道，不纳入。更新方法见文件尾注释。
+// BMP assigned-range table, generated from local Python unicodedata
+// (Unicode 16.0.0). Unassigned BMP codepoints are dropped by the channel
+// (verified via U+0378), hence in scope; astral unassigned pass — out of scope. Regeneration notes at the file tail.
 const ASSIGNED_BMP_RAW = "0-377,37a-37f,384-38a,38c-38c,38e-3a1,3a3-52f,531-556,559-58a,58d-58f,591-5c7,5d0-5ea,5ef-5f4,600-70d,70f-74a,74d-7b1,7c0-7fa,7fd-82d,830-83e,840-85b,85e-85e,860-86a,870-88e,890-891,897-983,985-98c,98f-990,993-9a8,9aa-9b0,9b2-9b2,9b6-9b9,9bc-9c4,9c7-9c8,9cb-9ce,9d7-9d7,9dc-9dd,9df-9e3,9e6-9fe,a01-a03,a05-a0a,a0f-a10,a13-a28,a2a-a30,a32-a33,a35-a36,a38-a39,a3c-a3c,a3e-a42,a47-a48,a4b-a4d,a51-a51,a59-a5c,a5e-a5e,a66-a76,a81-a83,a85-a8d,a8f-a91,a93-aa8,aaa-ab0,ab2-ab3,ab5-ab9,abc-ac5,ac7-ac9,acb-acd,ad0-ad0,ae0-ae3,ae6-af1,af9-aff,b01-b03,b05-b0c,b0f-b10,b13-b28,b2a-b30,b32-b33,b35-b39,b3c-b44,b47-b48,b4b-b4d,b55-b57,b5c-b5d,b5f-b63,b66-b77,b82-b83,b85-b8a,b8e-b90,b92-b95,b99-b9a,b9c-b9c,b9e-b9f,ba3-ba4,ba8-baa,bae-bb9,bbe-bc2,bc6-bc8,bca-bcd,bd0-bd0,bd7-bd7,be6-bfa,c00-c0c,c0e-c10,c12-c28,c2a-c39,c3c-c44,c46-c48,c4a-c4d,c55-c56,c58-c5a,c5d-c5d,c60-c63,c66-c6f,c77-c8c,c8e-c90,c92-ca8,caa-cb3,cb5-cb9,cbc-cc4,cc6-cc8,cca-ccd,cd5-cd6,cdd-cde,ce0-ce3,ce6-cef,cf1-cf3,d00-d0c,d0e-d10,d12-d44,d46-d48,d4a-d4f,d54-d63,d66-d7f,d81-d83,d85-d96,d9a-db1,db3-dbb,dbd-dbd,dc0-dc6,dca-dca,dcf-dd4,dd6-dd6,dd8-ddf,de6-def,df2-df4,e01-e3a,e3f-e5b,e81-e82,e84-e84,e86-e8a,e8c-ea3,ea5-ea5,ea7-ebd,ec0-ec4,ec6-ec6,ec8-ece,ed0-ed9,edc-edf,f00-f47,f49-f6c,f71-f97,f99-fbc,fbe-fcc,fce-fda,1000-10c5,10c7-10c7,10cd-10cd,10d0-1248,124a-124d,1250-1256,1258-1258,125a-125d,1260-1288,128a-128d,1290-12b0,12b2-12b5,12b8-12be,12c0-12c0,12c2-12c5,12c8-12d6,12d8-1310,1312-1315,1318-135a,135d-137c,1380-1399,13a0-13f5,13f8-13fd,1400-169c,16a0-16f8,1700-1715,171f-1736,1740-1753,1760-176c,176e-1770,1772-1773,1780-17dd,17e0-17e9,17f0-17f9,1800-1819,1820-1878,1880-18aa,18b0-18f5,1900-191e,1920-192b,1930-193b,1940-1940,1944-196d,1970-1974,1980-19ab,19b0-19c9,19d0-19da,19de-1a1b,1a1e-1a5e,1a60-1a7c,1a7f-1a89,1a90-1a99,1aa0-1aad,1ab0-1ace,1b00-1b4c,1b4e-1bf3,1bfc-1c37,1c3b-1c49,1c4d-1c8a,1c90-1cba,1cbd-1cc7,1cd0-1cfa,1d00-1f15,1f18-1f1d,1f20-1f45,1f48-1f4d,1f50-1f57,1f59-1f59,1f5b-1f5b,1f5d-1f5d,1f5f-1f7d,1f80-1fb4,1fb6-1fc4,1fc6-1fd3,1fd6-1fdb,1fdd-1fef,1ff2-1ff4,1ff6-1ffe,2000-2064,2066-2071,2074-208e,2090-209c,20a0-20c0,20d0-20f0,2100-218b,2190-2429,2440-244a,2460-2b73,2b76-2b95,2b97-2cf3,2cf9-2d25,2d27-2d27,2d2d-2d2d,2d30-2d67,2d6f-2d70,2d7f-2d96,2da0-2da6,2da8-2dae,2db0-2db6,2db8-2dbe,2dc0-2dc6,2dc8-2dce,2dd0-2dd6,2dd8-2dde,2de0-2e5d,2e80-2e99,2e9b-2ef3,2f00-2fd5,2ff0-303f,3041-3096,3099-30ff,3105-312f,3131-318e,3190-31e5,31ef-321e,3220-a48c,a490-a4c6,a4d0-a62b,a640-a6f7,a700-a7cd,a7d0-a7d1,a7d3-a7d3,a7d5-a7dc,a7f2-a82c,a830-a839,a840-a877,a880-a8c5,a8ce-a8d9,a8e0-a953,a95f-a97c,a980-a9cd,a9cf-a9d9,a9de-a9fe,aa00-aa36,aa40-aa4d,aa50-aa59,aa5c-aac2,aadb-aaf6,ab01-ab06,ab09-ab0e,ab11-ab16,ab20-ab26,ab28-ab2e,ab30-ab6b,ab70-abed,abf0-abf9,ac00-d7a3,d7b0-d7c6,d7cb-d7fb,e000-fa6d,fa70-fad9,fb00-fb06,fb13-fb17,fb1d-fb36,fb38-fb3c,fb3e-fb3e,fb40-fb41,fb43-fb44,fb46-fbc2,fbd3-fd8f,fd92-fdc7,fdcf-fdcf,fdf0-fe19,fe20-fe52,fe54-fe66,fe68-fe6b,fe70-fe74,fe76-fefc,feff-feff,ff01-ffbe,ffc2-ffc7,ffca-ffcf,ffd2-ffd7,ffda-ffdc,ffe0-ffe6,ffe8-ffee,fff9-fffd";
 
 const ASSIGNED_BMP: Array<[number, number]> = ASSIGNED_BMP_RAW.split(",").map(
@@ -45,34 +45,34 @@ function isAssignedBmp(cp: number): boolean {
   }
   return false;
 }
-// 实测会被模型输出通道丢弃的码位集合（与字体能否渲染无关）
+// Codepoints empirically dropped by the model output channel (font-coverage independent)
 function isAtRisk(cp: number): boolean {
   return (
-    (cp <= 0xffff && !isAssignedBmp(cp)) || // BMP 未分配（实测亦被丢）
-    (cp >= 0xe000 && cp <= 0xf8ff) || // BMP 私有区（Nerd Font 主力区）
-    (cp >= 0xf0000 && cp <= 0xffffd) || // PUA-A（md- 系图标）
+    (cp <= 0xffff && !isAssignedBmp(cp)) || // unassigned BMP (dropped in practice)
+    (cp >= 0xe000 && cp <= 0xf8ff) || // BMP PUA (the Nerd Font heartland)
+    (cp >= 0xf0000 && cp <= 0xffffd) || // PUA-A (md- icons)
     (cp >= 0x100000 && cp <= 0x10fffd) || // PUA-B（Plane 15/16）
-    (cp >= 0xe0000 && cp <= 0xe007f) || // Tags 区
-    (cp >= 0xfdd0 && cp <= 0xfdef) || // 非字符
-    (cp & 0xfffe) === 0xfffe // 各平面 U+xFFFE / U+FFFF
+    (cp >= 0xe0000 && cp <= 0xe007f) || // Tags block
+    (cp >= 0xfdd0 && cp <= 0xfdef) || // noncharacters
+    (cp & 0xfffe) === 0xfffe // U+xFFFE / U+FFFF on any plane
   );
 }
 
-/** 天生不可见：这些码位在任何字体里都不会有字形（Unicode 禁止赋予），
- * 还原成真字符等于制造新的静默失败——替换为可见标记 □U+XXXX */
+/** Inherently invisible: no font may ever assign glyphs here (Unicode
+ * forbids it), so restoring would CREATE a silent failure — substitute a visible □U+XXXX marker */
 function isInherentlyInvisible(cp: number): boolean {
   return (
-    (cp >= 0xfdd0 && cp <= 0xfdef) || // 非字符
-    (cp & 0xfffe) === 0xfffe || // 各平面 U+xFFFE / U+FFFF
-    (cp >= 0xe0000 && cp <= 0xe007f) || // Tags 区（格式字符，设计上不可见）
-    (cp <= 0xffff && !isAssignedBmp(cp)) // BMP 未分配（字体无字形，可能渲染空白）
+    (cp >= 0xfdd0 && cp <= 0xfdef) || // noncharacters
+    (cp & 0xfffe) === 0xfffe || // U+xFFFE / U+FFFF on any plane
+    (cp >= 0xe0000 && cp <= 0xe007f) || // Tags (format chars, invisible by design)
+    (cp <= 0xffff && !isAssignedBmp(cp)) // unassigned BMP (no glyph anywhere; may render blank)
   );
 }
 
-// ── 本机字体字形 ground truth ──────────────────────────────
-// 类别判定只覆盖"任何字体都不可能有字形"的码位；PUA 等可能有字形的码位
-// 是否真的有，由本机全部字体 cmap 的并集说了算（终端回退链也在这并集内）。
-// 并集扫描一次（所有字体，不只 Nerd Font），结果缓存到磁盘，进程内复用。
+// ── Local font glyph ground truth ──────────────────────────────
+// Category checks only cover "no font could ever have a glyph"; for
+// maybe-glyph codepoints (PUA etc.) the union of ALL local font cmaps is
+// the authority (the terminal fallback chain lives inside this union). Scan once, cache to disk, reuse in-process.
 import * as os from "node:os";
 
 const CMAP_CACHE =
@@ -83,7 +83,7 @@ const CMAP_CACHE =
       ? `${os.homedir()}/Library/Caches/pi-nerdfont-unescape/cmap.json`
       : `${os.homedir()}/.cache/pi-nerdfont-unescape/cmap.json`);
 const CMAP_STORE = Symbol.for("pi.nerdfontUnescape.cmap");
-const CMAP_SIG = Symbol.for("pi.nerdfontUnescape.cmapSig"); // 签名必须全局存活：reload 重置模块变量后仍可比对
+const CMAP_SIG = Symbol.for("pi.nerdfontUnescape.cmapSig"); // must live globally: module vars reset on reload
 const CMAP_ASYNC_STATE = Symbol.for("pi.nerdfontUnescape.cmapAsyncState");
 
 type Ranges = Array<[number, number]>;
@@ -119,7 +119,7 @@ if fonts:
             except Exception:
                 pass
     except ImportError:
-        sys.exit(3)  # fontTools 缺失：保持未知，不写缓存
+        sys.exit(3)  # fontTools missing: stay unknown, write no cache
 rs, s, prev = [], None, None
 for cp in sorted(cps):
     if s is None: s = prev = cp
@@ -155,23 +155,23 @@ function inRanges(rs: Ranges, cp: number): boolean {
   return false;
 }
 
-/** 读取磁盘缓存到共享存储；不存在、损坏或【缺签名】返回 false。
- * 旧格式缓存（只有 ranges 没有 sig）必须视为迁移失败并触发重建——
- * 否则签名失效机制会静默失明（外部评审判例）。 */
+/** Load the disk cache into shared storage; return false when absent,
+ * corrupt, or [missing a signature]. Legacy caches (ranges without sig)
+ * count as a failed migration and trigger a rebuild — a silent blind spot otherwise (review precedent). */
 function loadCmapCache(): boolean {
   try {
     const data = JSON.parse(require("node:fs").readFileSync(CMAP_CACHE, "utf8"));
     if (!Array.isArray(data.ranges) || typeof data.sig !== "string") return false;
     (globalThis as any)[CMAP_STORE] = data.ranges as Ranges;
     cmapSig = data.sig;
-    (globalThis as any)[CMAP_SIG] = cmapSig; // 同步全局：NF 解析缓存失效判据
+    (globalThis as any)[CMAP_SIG] = cmapSig; // mirror globally: NF-cache invalidation basis
     return true;
   } catch {
     return false;
   }
 }
 
-/** 后台构建/刷新缓存（session_start 触发，不阻塞会话）。 */
+/** Build/refresh the cache in the background (session_start, non-blocking). */
 let cmapSig: string | undefined;
 
 type CmapAsyncState = { checking: boolean; building: boolean };
@@ -202,9 +202,9 @@ function buildCmapCache(notify?: (msg: string, level: string) => void): void {
         console.error(`[nerdfont-unescape] ${String(stdout).trim()}`);
         return;
       }
-      // 失败（含 fontTools 缺失）：类别判定兜底可用，但必须留痕——静默降级是红线
+      // Failure (incl. missing fontTools): category fallback still works,
       const reason = processErrorSummary(err, stderr);
-      const msg = `nerdfont-unescape: cmap 不可用（${reason}）——可渲染性判定退化为类别判断；安装 python3 + fontTools 可恢复`;
+      const msg = `nerdfont-unescape: cmap unavailable (${reason}) — renderability falls back to category checks; install python3 + fontTools to restore`;
       console.error(`[nerdfont-unescape] cmap build FAILED: ${reason}`);
       notify?.(msg, "warning");
     });
@@ -220,7 +220,7 @@ function checkCmapSignature(notify?: (msg: string, level: string) => void): void
       const cur = err ? undefined : String(stdout).trim();
       if (err || !cur) {
         const reason = err ? processErrorSummary(err, stderr) : "empty signature response";
-        const msg = `nerdfont-unescape: 字体签名核验失败（${reason}）；cmap 缓存失效检测暂时不可用`;
+        const msg = `nerdfont-unescape: font signature check failed (${reason}); cmap invalidation detection is temporarily unavailable`;
         console.error(`[nerdfont-unescape] cmap signature check FAILED: ${reason}`);
         notify?.(msg, "warning");
         return;
@@ -232,11 +232,11 @@ function checkCmapSignature(notify?: (msg: string, level: string) => void): void
 function ensureCmapCache(notify?: (msg: string, level: string) => void): void {
   const g = globalThis as any;
   if (g[CMAP_STORE]) {
-    // reload 场景：cmap 已在全局，但本模块实例的 cmapSig 是新的 undefined——
-    // 必须从全局回填，否则签名比对永远失配/永不再触发（外部评审判例）
+    // Reload path: cmap is already global, but THIS instance's cmapSig is a
+    // fresh undefined — backfill from the global or the comparison never works (review precedent)
     if (cmapSig === undefined && typeof g[CMAP_SIG] === "string") cmapSig = g[CMAP_SIG];
-    // 热升级场景：第五轮版本只留 CMAP_STORE、没有 CMAP_SIG——
-    // 从磁盘缓存恢复签名（loadCmapCache 会同步写全局）；文件也丢/旧格式则后台重建
+    // Hot-upgrade path: the round-5 build left CMAP_STORE but no CMAP_SIG —
+    // recover the signature from disk (mirrored globally); if gone/legacy, rebuild in background
     if (typeof g[CMAP_SIG] !== "string") {
       if (!loadCmapCache()) {
         buildCmapCache(notify);
@@ -247,16 +247,16 @@ function ensureCmapCache(notify?: (msg: string, level: string) => void): void {
     return;
   }
   if (!loadCmapCache()) {
-    buildCmapCache(notify); // 无缓存：首次构建
+    buildCmapCache(notify); // no cache yet: first build
     return;
   }
   // Keep serving the previous map while checking for font changes in background.
   checkCmapSignature(notify);
 }
 
-// [[nf:name]] 语义协议（v0.2）：模型写图标语义名，扩展按本机字体解析成
-// \uXXXX 转义，再交给既有还原管线——保护/可见性/通知全部复用。
-// 围栏与行内代码段内的标记不动（代码是拿来复制的）。
+// [[nf:name]] semantic protocol (v0.2): the model writes icon SEMANTIC
+// names; the extension resolves them against local fonts into \uXXXX
+// escapes and reuses the whole pipeline. Markers in fences/inline code stay put (code is meant to be copied).
 const NF_MARKER = /\[\[nf:([a-z0-9_.-]{1,40})\]\]/gi;
 const NF_CACHE = Symbol.for("pi.nerdfontUnescape.nfCache");
 
@@ -283,37 +283,37 @@ function walkUnprotected(text: string, fn: (seg: string) => string): string {
 }
 
 async function resolveNfMarkers(text: string, notify?: (msg: string, level: string) => void): Promise<string> {
-  if (!/\[\[nf:/i.test(text)) return text; // 快速通道必须与 NF_MARKER 同为大小写不敏感（静默忽略=红线违规）
+  if (!/\[\[nf:/i.test(text)) return text; // fast path must match NF_MARKER's case-insensitivity (silent ignore = red-line violation)
   const g = globalThis as any;
-  // 结构校验而非存在性检查：旧版遗留的是裸 Map（reload 同进程存活），
-  // 缺 sig/map 字段 → 安全重建，绝不带着坏结构往下走（外部评审判例：曾直接崩溃）
+  // Validate STRUCTURE, not existence: legacy builds left a bare Map
+  // (survives /reload); missing sig/map fields → rebuild safely, never proceed broken (review precedent)
   if (!(g[NF_CACHE] && typeof g[NF_CACHE] === "object" && g[NF_CACHE].map instanceof Map)) {
     g[NF_CACHE] = { sig: undefined as string | undefined, map: new Map<string, number | null>() };
   }
   const store = g[NF_CACHE] as { sig: string | undefined; map: Map<string, number | null> };
   const curSig = (globalThis as any)[CMAP_SIG] as string | undefined;
   if (store.sig !== curSig) {
-    store.map.clear(); // 字体集指纹变化（增删字体）→ 解析缓存整体失效
-    store.sig = curSig; // 写回比对基准（曾误写模块局部 cmapSig → 每条消息重复清缓存）
+    store.map.clear(); // font-set fingerprint changed → drop the whole resolution cache
+    store.sig = curSig; // write back the comparison basis (a module-local here re-cleared every message)
   }
   const cache = store.map;
   const wanted = new Set<string>();
   const invalid = new Set<string>();
-  const LOOSE_NF = /\[\[nf:([^\[\]\n]*)\]\]/gi; // 匹配完整外壳、名字不限长——超长名同样必须点名（外部评审判例）
-  const VALID_NAME = /^[a-z0-9_.-]{1,40}$/i; // 与 NF_MARKER 完全同规则：字符集+长度上限
+  const LOOSE_NF = /\[\[nf:([^\[\]\n]*)\]\]/gi; // full shell, unbounded name — overlong names must be reported too (review precedent)
+  const VALID_NAME = /^[a-z0-9_.-]{1,40}$/i; // exactly NF_MARKER's rule: charset + length cap
   walkUnprotected(text, (seg) => {
     for (const m of seg.matchAll(NF_MARKER)) wanted.add(m[1].toLowerCase());
     for (const m of seg.matchAll(LOOSE_NF)) {
-      if (!VALID_NAME.test(m[1])) invalid.add(m[1]); // 形如 [[nf:...]] 但名字非法 → 必须点名
+      if (!VALID_NAME.test(m[1])) invalid.add(m[1]); // looks like [[nf:...]] but the name is illegal → must be reported
     }
     return seg;
   });
   if (invalid.size > 0) {
-    notify?.(`nerdfont-unescape: 标记语法不合法（名字只允许字母/数字/._-），原样保留：[[nf:${[...invalid].join("]]、[[nf:")}]]`, "warning");
+    notify?.(`nerdfont-unescape: invalid marker syntax (names: letters/digits/._- , max 40 chars), kept verbatim: [[nf:${[...invalid].join("]] [[nf:")}]]`, "warning");
   }
   if (wanted.size === 0) return text;
-  // 失败(null)不跨消息缓存——装新字体/临时故障后下一条消息自动重试；
-  // 所有待查名合并为一次批量 python 调用（逐名调用曾使延迟线性增长）
+  // Failures (null) are not cached across messages — after installing fonts
+  // or a transient fault the next message retries; all uncached names go through ONE batched python call (linear latency otherwise)
   const uncached = [...wanted].filter((n) => cache.get(n) == null);
   if (uncached.length > 0) {
     const out = await new Promise<string>((resolve) => {
@@ -334,13 +334,13 @@ async function resolveNfMarkers(text: string, notify?: (msg: string, level: stri
       const cp = cache.get(k) ?? null;
       if (cp === null || cp === undefined) {
         if (!unresolved.includes(k)) unresolved.push(k);
-        return whole; // 未解析：标记保留 + 警告点名，不静默
+        return whole; // unresolved: keep the marker + name it in a warning, never silent
       }
       return cp <= 0xffff ? `\\u${cp.toString(16).padStart(4, "0")}` : `\\u{${cp.toString(16)}}`;
     }),
   );
   if (unresolved.length > 0) {
-    notify?.(`nerdfont-unescape: [[nf:${unresolved.join("]]、[[nf:")}]] 本机字体无此名称——标记原样保留（用 nerdfont_lookup 查可用名称）`, "warning");
+    notify?.(`nerdfont-unescape: [[nf:${unresolved.join("]] [[nf:")}]] — no such name in local fonts; marker kept verbatim (use nerdfont_lookup to find valid names)`, "warning");
   }
   return outText;
 }
@@ -349,8 +349,8 @@ function unescapeAtRisk(text: string): {
   text: string;
   restored: number;
   cps: number[];
-  substituted: number[]; // 天生不可见码位，已替换为 □U+XXXX 可见标记
-  hatched: number; // 逃生舱字面化次数（双反斜杠 → 单反斜杠展示）
+  substituted: number[]; // inherently invisible codepoints, replaced with □U+XXXX markers
+  hatched: number; // hatch literalizations (double backslash → single-backslash display)
 } {
   if (!text.includes("\\u")) return { text, restored: 0, cps: [], substituted: [], hatched: 0 };
   const cps: number[] = [];
@@ -359,14 +359,14 @@ function unescapeAtRisk(text: string): {
   const visibleTag = (cp: number) =>
     `${TOFU}U+${cp.toString(16).toUpperCase().padStart(4, "0")}`;
   const cmap = (globalThis as any)[CMAP_STORE] as Ranges | undefined;
-  // 单趟交替正则：分支A=双反斜杠（逃生舱，字面化），分支B=单反斜杠（还原/替换）。
-  // 同一位置先试双后试单；无内部哨兵——哨兵会与用户文本碰撞
-  // （2026-10-28 外部评审判例：字面 \uLIT0; 曾被错误改写）。
+  // Single-pass alternation: branch A = double backslash (hatch, literalize),
+  // branch B = single backslash (restore/substitute). Double tried first per
+  // position; NO internal sentinel — sentinels collide with user text (review precedent: a literal \uLIT0; was once rewritten).
   const ONE_PASS = /\\{2}u(?:\{([0-9a-fA-F]{1,6})\}|([0-9a-fA-F]{4}))|\\u(?:\{([0-9a-fA-F]{1,6})\}|([0-9a-fA-F]{4}))/g;
   const processSegment = (seg: string) =>
     seg.replace(ONE_PASS, (whole, aBrace?: string, aPlain?: string, brace?: string, plain?: string) => {
       if (aBrace !== undefined || aPlain !== undefined) {
-        hatched++; // 逃生舱：双反斜杠 → 单反斜杠字面展示
+        hatched++; // hatch: double backslash → single-backslash literal display
         return whole.slice(1);
       }
       const cp = parseInt(brace ?? plain!, 16);
@@ -374,15 +374,15 @@ function unescapeAtRisk(text: string): {
         const notInFonts = cmap !== undefined && !inRanges(cmap, cp);
         if (isInherentlyInvisible(cp) || notInFonts) {
           substituted.push(cp);
-          return visibleTag(cp); // 不可见或本机字体无字形：可见标记，拒绝静默失败
+          return visibleTag(cp); // invisible or no local glyph: visible marker, refuse silent failure
         }
         cps.push(cp);
         return String.fromCodePoint(cp);
       }
-      return whole; // 安全区（\ufffd、\u0041 等）原样保留
+      return whole; // safe range (\ufffd, \u0041, ...) kept verbatim
     });
-  // 围栏 + 行内代码段保护：保护片段完全不过 processSegment——
-  // 逃生舱也不许碰代码（复制保真，2026-10-28 外部评审判例）
+  // Fence + inline-code protection: protected segments never reach processSegment —
+  // the hatch must not touch code either (copy fidelity, review precedent)
   const FENCE = /^[ \t]*(`{3,}|~{3,})/;
   let fenceOpen: { ch: string; len: number } | null = null;
   const out = text
@@ -393,11 +393,11 @@ function unescapeAtRisk(text: string): {
         const run = fm[1];
         const rest = line.slice((fm.index ?? 0) + fm[0].length);
         if (!fenceOpen) {
-          fenceOpen = { ch: run[0], len: run.length }; // 开启行允许信息串（```js）
+          fenceOpen = { ch: run[0], len: run.length }; // opening line may carry an info string (```js)
         } else if (
           run[0] === fenceOpen.ch &&
           run.length >= fenceOpen.len &&
-          /^[ \t]*$/.test(rest) // 闭合行必须纯围栏（```x 不算闭合，CommonMark）
+          /^[ \t]*$/.test(rest) // closing line must be a pure fence (```x does not close, CommonMark)
         ) {
           fenceOpen = null;
         }
@@ -412,9 +412,9 @@ function unescapeAtRisk(text: string): {
   return { text: out, restored: cps.length, cps, substituted, hatched };
 }
 
-// ── 码位 → 语义区域命名（用于通知中说明丢/还原字符的“身份”）──
-// 命名原则：块级语义名，括注常见用途/知名度；未列出的归 unassigned。
-// 覆盖不求穷尽，求“任何常见字符都能叫出有意义的名字”。
+// ── Codepoint → semantic region naming (for loss/restore notifications) ──
+// Principle: block-level semantic names with common-use annotations;
+// unlisted ranges fall back to "unassigned". Every common char deserves a meaningful name.
 type Region = { lo: number; hi: number; name: string };
 const REGIONS: Region[] = [
   { lo: 0x0000, hi: 0x007f, name: "ASCII" },
@@ -539,7 +539,7 @@ const REGIONS: Region[] = [
 
 function regionName(cp: number): string {
   if ((cp >= 0xfdd0 && cp <= 0xfdef) || (cp & 0xfffe) === 0xfffe) return "Unicode noncharacters";
-  if (cp <= 0xffff && !isAssignedBmp(cp)) return "unassigned"; // 精确判断，优于 REGIONS 粗区间
+  if ((cp >= 0xfdd0 && cp <= 0xfdef) || (cp & 0xfffe) === 0xfffe) return "Unicode noncharacters";
   for (const r of REGIONS) {
     if (cp >= r.lo && cp <= r.hi) return r.name;
   }
@@ -558,13 +558,13 @@ function summarize(cps: number[]): string {
 }
 
 const ICON_CONTEXT =
-  /icon|glyph|图标|字形|圖標|U\+[0-9A-Fa-f]{4,5}|nerd.?font|PUA|private.?use|私有[区區]|零宽|零寬|zero.?width|tag|标签|標籤|变体|變體|variation|selector|选择符|選擇符|非字符|noncharacter|转义|轉義|escape|unicode/i;
+  /icon|glyph|\u56fe\u6807|\u5b57\u5f62|\u5707\u6a19|U\+[0-9A-Fa-f]{4,5}|nerd.?font|PUA|private.?use|\u79c1\u6709[\u533a\u5340]|\u96f6[\u5bbd\u5bec]|zero.?width|tag|\u6a19\u7c64|\u8b8a\u9ad4|variation|selector|\u975e\u5b57\u7b26|noncharacter|\u8f49\u7fa9|escape|unicode/i;
 
-// 行内代码段切分：把一行拆为 {文本, 是否受保护} 片段。
-// CommonMark 语义：N 个连续反引号开启，等长的 N 个反引号闭合；内容可含
-// 不同长度的反引号串（`` `x` `` 这种双反引号包裹是显示反引号代码的
-// 标准写法，必须整体保护——v1 正则版在此翻车）。未闭合的串按字面处理，
-// 状态不跨行，误判最坏影响一行。围栏行必须先于本函数处理。
+// Inline code-span splitting: split a line into {text, protected} segments.
+// CommonMark semantics: a run of N backticks opens, an EQUAL-length run
+// closes; content may contain runs of other lengths (`` `x` `` is the standard
+// way to show backticked code and must be protected as a whole — the v1 regex failed exactly here).
+// Unmatched runs stay literal; state never crosses lines; worst case one line. Fences first.
 function splitByInlineSpans(line: string): Array<{ text: string; protected: boolean }> {
   const segs: Array<{ text: string; protected: boolean }> = [];
   let last = 0;
@@ -576,7 +576,7 @@ function splitByInlineSpans(line: string): Array<{ text: string; protected: bool
     }
     let n = 0;
     while (i + n < line.length && line[i + n] === "`") n++;
-    // 向后找等长闭合串
+    // scan forward for an equal-length closing run
     let j = i + n;
     let closed = -1;
     while (j < line.length) {
@@ -587,7 +587,7 @@ function splitByInlineSpans(line: string): Array<{ text: string; protected: bool
           closed = j + m2;
           break;
         }
-        j += m2; // 长度不等：是内容，跳过整串
+        j += m2; // different length: content, skip the whole run
       } else {
         j++;
       }
@@ -598,29 +598,29 @@ function splitByInlineSpans(line: string): Array<{ text: string; protected: bool
       last = closed;
       i = closed;
     } else {
-      i += n; // 未闭合：字面量，继续
+      i += n; // unmatched: literal, move on
     }
   }
   if (last < line.length) segs.push({ text: line.slice(last), protected: false });
   return segs.length > 0 ? segs : [{ text: line, protected: false }];
 }
 
-// 痕迹 → 补框（返回替换后文本与补框数）
-const PAIR = /(['"`])([ \t]*)\1/g; // 空引号对（内部仅容空白）
+// Traces → placeholder filling (returns replaced text and fill count)
+const PAIR = /(['"`])([ \t]*)\1/g; // empty quote pairs (whitespace-only inside)
 const isQuote = (c: string) => c === "'" || c === '"' || c === "`";
 
 function tofuFill(text: string): { text: string; filled: number; cps: (number | null)[] } {
   let filled = 0;
-  const cps: (number | null)[] = []; // 每次补框对应的码位（空引号对无从得知 → null）
-  // ① 空引号对/空反引号对：''  ""  ``  → '□'
-  //    逐对扫描（而非单条正则），四重防误报：
-  //    a) Markdown 围栏行（```/~~~ 开头）整行跳过；
-  //    b) 同类字符连写（'''、``` 等）中的伪配对跳过：
-  //       前紧贴任意引号 / 后紧贴同类引号时不填；
-  //    c) 配对前紧贴 □（已补框或历史损坏痕迹）时跳过——保证幂等、
-  //       不叠加破坏；
-  //    d) 反引号对若仅隔空白仍与其它反引号相邻，视为引用构造
-  //       （如包裹 ``` 的 `` `` `` 外壳），跳过。
+  const cps: (number | null)[] = []; // codepoint per fill (empty pairs unknowable → null)
+  // (1) Empty quote/backtick pairs: '' "" `` → '□'
+  //     Pair-by-pair scan (not one regex), four-fold false-positive armor:
+  //     a) markdown fence lines (```/~~~ prefix) skipped whole;
+  //     b) pseudo-pairs inside same-char runs ('''、```) skipped: any quote
+  //        glued before / same-kind quote glued after → no fill;
+  //     c) a □ glued before the pair (already filled or historical damage) →
+  //        skip: idempotent, no stacking;
+  //     d) a backtick pair enclosing only whitespace yet touching other backticks
+  //        is a quoting construct (e.g. the `` `` `` wrapper of ```), skip.
   let tfFenceOpen: { ch: string; len: number } | null = null;
   text = text
     .split("\n")
@@ -629,11 +629,11 @@ function tofuFill(text: string): { text: string; filled: number; cps: (number | 
       if (tfm) {
         if (!tfFenceOpen) tfFenceOpen = { ch: tfm[1][0], len: tfm[1].length };
         else if (tfm[1][0] === tfFenceOpen.ch && tfm[1].length >= tfFenceOpen.len) tfFenceOpen = null;
-        return line; // a) 围栏行（同字符等长才闭合）
+        return line; // (a) fence line (closes only on same char, >= length)
       }
-      if (tfFenceOpen) return line; // 围栏内容：代码字面量，不是丢失痕迹
-      // e) 包裹结构预扫描：同类引号连写 + 中间仅词字符/私有区字符 + 闭合连写。
-      //    两侧空引号对是包裹符而非丢失痕迹——结构检测比关键词可靠
+      if (tfFenceOpen) return line; // fenced content: literal code, not a loss trace
+      // (e) wrapper-structure prescan: same-quote runs + word/PUA-only middle + closing run.
+      //     Flanking empty pairs are wrappers, not loss traces — structure beats keywords
       const wraps: Array<[number, number]> = [];
       const WRAP = /(['"`])\1+([\p{L}\p{N}\p{Co}]+)\1\1+/gu;
       for (const wm of line.matchAll(WRAP)) {
@@ -644,11 +644,11 @@ function tofuFill(text: string): { text: string; filled: number; cps: (number | 
           f = f.slice(0, -1);
           close++;
         }
-        const open = f.length - wm[2].length; // f 已剥除闭合段，无需再减 close
+        const open = f.length - wm[2].length; // closing run already stripped from f
         const cs = wm.index! + open + wm[2].length;
         wraps.push([wm.index!, wm.index! + open - 1], [cs, cs + close - 1]);
       }
-      // 行内代码段区间：PAIR 命中其中则视为代码字面量，不是丢失痕迹
+      // Inline code-span ranges: a PAIR hit inside one is literal code, not a loss trace
       const protectedRanges: Array<[number, number]> = [];
       {
         let cursor = 0;
@@ -669,28 +669,28 @@ function tofuFill(text: string): { text: string; filled: number; cps: (number | 
         const before = start > 0 ? line[start - 1] : "";
         const after = end < line.length ? line[end] : "";
         let skip =
-          wraps.some(([a2, b2]) => start >= a2 && start <= b2) || // e) 包裹侧对
+          wraps.some(([a2, b2]) => start >= a2 && start <= b2) || // (e) wrapper flanks
           isQuote(before) ||
           after === q ||
           before === TOFU; // b) c)
         if (q === "`" && !skip) {
-          if (/[ \t]*`$/.test(line.slice(0, start))) skip = true; // d) 前邻
-          else if (/^[ \t]*`/.test(line.slice(end))) skip = true; // d) 后邻
+          if (/[ \t]*`$/.test(line.slice(0, start))) skip = true; // (d) preceding backtick
+          else if (/^[ \t]*`/.test(line.slice(end))) skip = true; // (d) following backtick
         }
         if (skip) continue;
         out += line.slice(last, start) + q + TOFU + q;
         last = end;
         filled++;
-        cps.push(null); // 码位不明（字符已无痕丢失）
+        cps.push(null); // codepoint unknown (char lost without a trace)
       }
       return out + line.slice(last);
     })
     .join("\n");
-  // ② Lua 码位注释行尾无字形：-- U+E235 → -- U+E235 □（码位可查，区域能命名）
+  // (2) Lua-style codepoint comment with no trailing glyph: -- U+E235 → -- U+E235 □
   text = text.replace(/(--[ \t]*U\+[0-9A-Fa-f]{4,5})[ \t]*$/gm, (m) => {
     const hex = /U\+([0-9A-Fa-f]{4,5})/.exec(m);
     const cp = hex ? parseInt(hex[1], 16) : null;
-    // 守约检查：该码位字符若已在本消息出现（如转义已还原），行尾无需补框
+    // Compliance check: if that codepoint already appears in this message (restored escape), no fill needed
     if (cp !== null && text.includes(String.fromCodePoint(cp))) return m;
     filled++;
     cps.push(cp);
@@ -699,12 +699,12 @@ function tofuFill(text: string): { text: string; filled: number; cps: (number | 
   return { text, filled, cps };
 }
 
-// 本机 Nerd Font 字形查询脚本（无反斜杠/反引号，避开模板字符串转义地狱）
-// starship 各模块默认符号表（由 starship print-config --default 生成，1.26.0；
-// 更新：重跑该命令重新生成，见文件尾注释）
+// Local Nerd Font glyph lookup script (no backslashes/backticks — dodges template-literal escaping hell)
+// starship per-module defaults (from starship print-config --default, 1.26.0;
+// regenerate by rerunning that command — notes at the file tail)
 const STARSHIP_DEFAULTS_RAW = "aws.symbol=2601,fe0f|azure.symbol=f0805|battery.full_symbol=f0079|battery.charging_symbol=f0084|battery.discharging_symbol=f0083|battery.unknown_symbol=f0091|battery.empty_symbol=f008e|buf.symbol=1f403|bun.symbol=1f95f|character.success_symbol=5b,276f,5d,28,62,6f,6c,64,67,72,65,65,6e,29|character.error_symbol=5b,276f,5d,28,62,6f,6c,64,72,65,64,29|character.vimcmd_symbol=5b,276e,5d,28,62,6f,6c,64,67,72,65,65,6e,29|character.vimcmd_visual_symbol=5b,276e,5d,28,62,6f,6c,64,79,65,6c,6c,6f,77,29|character.vimcmd_replace_symbol=5b,276e,5d,28,62,6f,6c,64,70,75,72,70,6c,65,29|character.vimcmd_replace_one_symbol=5b,276e,5d,28,62,6f,6c,64,70,75,72,70,6c,65,29|claude_context.gauge_full_symbol=2588|claude_context.gauge_partial_symbol=2592|claude_context.gauge_empty_symbol=2591|claude_cost.symbol=1f4b0|claude_model.symbol=1f916|cmake.symbol=25b3|cobol.symbol=2699,fe0f|conda.symbol=1f152|container.symbol=2b22|crystal.symbol=1f52e|daml.symbol=39b|dart.symbol=1f3af|deno.symbol=1f995|docker_context.symbol=1f433|elixir.symbol=1f4a7|elm.symbol=1f333|erlang.symbol=e7b1|fennel.symbol=1f9c5|fortran.symbol=1f175|fossil_branch.symbol=e0a0|fossil_branch.truncation_symbol=2026|gcloud.symbol=2601,fe0f|git_branch.symbol=e0a0|git_branch.truncation_symbol=2026|git_commit.tag_symbol=1f3f7|gleam.symbol=2b50|golang.symbol=1f439|gradle.symbol=1f176|guix_shell.symbol=1f403|haskell.symbol=3bb|haxe.symbol=2318|helm.symbol=2388|hg_branch.symbol=e0a0|hg_branch.truncation_symbol=2026|hostname.ssh_symbol=1f310|java.symbol=2615|jobs.symbol=2726|julia.symbol=b83|kotlin.symbol=1f17a|kubernetes.symbol=2638|lua.symbol=1f319|maven.symbol=1f17c|memory_usage.symbol=1f40f|meson.truncation_symbol=2026|meson.symbol=2b22|mojo.symbol=1f525|nats.symbol=2709,fe0f|netns.symbol=1f6dc|nim.symbol=1f451|nix_shell.symbol=2744,fe0f|nodejs.symbol=e718|ocaml.symbol=1f42b|odin.symbol=d8|opa.symbol=1fa96|openstack.symbol=2601,fe0f|package.symbol=1f4e6|perl.symbol=1f42a|php.symbol=1f418|pijul_channel.symbol=e0a0|pijul_channel.truncation_symbol=2026|pixi.symbol=1f9da|pulumi.symbol=f1b2|python.symbol=1f40d|quarto.symbol=2a01|raku.symbol=1f98b|red.symbol=1f53a|rlang.symbol=1f4d0|ruby.symbol=1f48e|rust.symbol=1f980|scala.symbol=1f182|shlvl.symbol=2195,fe0f|spack.symbol=1f162|status.symbol=274c|status.not_executable_symbol=1f6ab|status.not_found_symbol=1f50d|status.sigint_symbol=1f9f1|status.signal_symbol=26a1|sudo.symbol=1f9d9|swift.symbol=1f426|terraform.symbol=1f4a0|vagrant.symbol=2371|xmake.symbol=25b3|zig.symbol=21af";
 
-// 本机 Nerd Font 字形查询 + starship 默认符号表查询（无反斜杠/反引号）
+// Local Nerd Font glyph + starship default lookup (no backslashes/backticks)
 const NF_LOOKUP_PY = `
 import sys, os, glob
 query = sys.argv[1].strip()
@@ -741,7 +741,7 @@ def esc(cp):
     return bs + "u%04x" % cp if cp <= 0xFFFF else bs + "u{%x}" % cp
 q = query.lower()
 
-# starship 默认符号模式：query 为 starship / starship <module>
+# starship defaults mode: query is starship / starship <module>
 if q == "starship" or q.startswith("starship:") or q.startswith("starship "):
     kw = q[9:].strip() if len(q) > 8 else ""
     table = os.environ.get("NF_STARSHIP", "")
@@ -777,7 +777,7 @@ if not fonts:
 if not names:
     print("fontTools not installed (pip3 install fonttools)")
     sys.exit(0)
-# resolve 模式：[[nf:name]] 语义协议的解析端。逗号分隔多个名，逐名输出 hex 或 ?
+# resolve mode: the [[nf:name]] resolution end. Comma-separated names; hex or ? per name
 if q.startswith("resolve:"):
     PRI = ("pl", "linux", "fae", "fa", "oct", "md", "seti", "dev", "cod", "custom", "ie", "weather")
     def famrank(nm):
@@ -786,7 +786,7 @@ if q.startswith("resolve:"):
             if p + "-" in l:
                 return i
         return len(PRI)
-    # 稳定语义别名：模型/人类的常见叫法 → 字体内部命名（解析顺序：别名 → 精确名 → 子串）
+    # Stable semantic aliases: common human/model names → font-internal names (alias → exact → substring)
     ALIAS = {"git-branch": "branch", "node-js": "nodejs", "node.js": "nodejs", "macos": "apple"}
     for name in q[8:].split(","):
         name = name.strip().lower()
@@ -815,7 +815,7 @@ for cp, name in names.items():
     elif q in name.lower():
         rows.append((cp, name))
 
-# 族别优先级：终端生态惯用族在前（starship/oh-my-zsh 等默认取这些族），同族按码位升序
+# Family priority: terminal-ecosystem families first (starship/oh-my-zsh defaults); ascending codepoint within a family
 FAM = ("pl-", "linux-", "fae-", "fa-", "oct-", "md-", "custom-", "seti-", "dev-", "cod-")
 def famrank(name):
     for i, p in enumerate(FAM):
@@ -833,7 +833,7 @@ if len(rows) > limit:
 if not rows:
     print("(no match; try keywords: python, vim, arch, branch, docker, nodejs, aws; or 'starship <module>')")
 `;
-// 等宽网格排版渲染：列宽算术 + 边框 + 点线行 + 预览转义 + 可选写真字符文件
+// Monospace grid renderer: column-width arithmetic + frames + dot leaders + escaped preview + optional real-char file write
 const RENDER_PY = `
 import sys
 content = sys.stdin.read()
@@ -855,7 +855,7 @@ def unesc(s):
                 k = s.find("}", j)
                 if k != -1 and 0 < k - j - 1 <= 6 and all(c in HEX for c in s[j+1:k]):
                     v = int(s[j+1:k], 16)
-                    out.append(chr(v) if v <= 0x10FFFF else "[U+%X]" % v)  # 超出码空间：可见标记而非崩溃
+                    out.append(chr(v) if v <= 0x10FFFF else "[U+%X]" % v)  # beyond the codespace: visible marker, not a crash
                     i = k + 1
                     continue
             else:
@@ -890,7 +890,7 @@ def to_prev(s):
         if 0xE000 <= o <= 0xF8FF:
             r.append(BS + "u%04X" % o)
         elif 0xF0000 <= o <= 0x10FFFD:
-            r.append(BS + "u{%X}" % o)  # 增补区 PUA 也必须以转义字面量呈现（通道安全）
+            r.append(BS + "u{%X}" % o)  # supplementary PUA must also surface as an escape literal (channel-safe)
         else:
             r.append(c)
     return "".join(r)
@@ -984,9 +984,9 @@ export default function (pi: ExtensionAPI) {
     ensureCmapCache(ctx?.ui?.notify?.bind(ctx.ui));
   });
 
-  // ④ 码位查询工具：给模型一个权威 oracle（本机 Nerd Font cmap），
-  //    避免其凭记忆猜码位、或自行写脚本扫描文件系统（实测代价：
-  //    60k 字思考 + 全盘扫描 + 10 分钟 + ~$0.32）
+  // (4) Codepoint oracle: an authoritative source (local Nerd Font cmaps) so
+  //     the model never guesses codepoints from memory or scans the filesystem
+  //     (measured cost of one such episode: 60k thinking chars + full-disk scan + 10 min + ~$0.32)
   pi.registerTool({
     name: "nerdfont_lookup",
     label: "Nerd Font Lookup",
@@ -1016,9 +1016,9 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // ⑤ 等宽排版渲染工具：列宽算术（CJK=2 列、PUA=1 列）+ 边框 + 点线 +
-  //    预览以转义字面量呈现（通道安全）+ 可选把真字符版写入文件
-  //    （绕过输出通道剥离，模型无需再手搓对齐脚本）
+  // (5) Monospace layout renderer: width arithmetic (CJK=2 cols, PUA=1) + frames
+  //     + dot leaders + channel-safe escaped preview + optional real-char file write
+  //     (bypasses the output-channel strip; no more hand-rolled alignment scripts)
   pi.registerTool({
     name: "render_preview",
     label: "Render Preview",
@@ -1037,14 +1037,14 @@ export default function (pi: ExtensionAPI) {
       writePath: Type.Optional(Type.String({ description: "also write the real-char version to this file" })),
     }),
     async execute(_toolCallId, params) {
-      // writePath 安全线：默认仅允许 cwd 与系统 tmp 内；PI_RENDER_ALLOW_ANY=1 显式放开
+      // writePath safety: only cwd and the system tmp by default; PI_RENDER_ALLOW_ANY=1 lifts it
       if (params.writePath && process.env.PI_RENDER_ALLOW_ANY !== "1") {
         const pathMod = require("node:path");
         const fsMod = require("node:fs");
         const wp = params.writePath;
         const tilde = wp.startsWith("~") ? os.homedir() + wp.slice(1) : wp;
         const abs = pathMod.isAbsolute(tilde) ? tilde : pathMod.resolve(tilde);
-        // 真路径判定：符号链接先解析（/tmp/x → /dev/null 不得绕过，外部评审判例）
+        // Realpath containment: resolve symlinks first (/tmp/x → /dev/null must not slip through)
         const realAbs = fsMod.existsSync(abs)
           ? fsMod.realpathSync(abs)
           : pathMod.join(fsMod.realpathSync(pathMod.dirname(abs)), pathMod.basename(abs));
@@ -1076,9 +1076,9 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // 洞3｜流级丢失探测：message_update 期间快照 at-risk 码位；message_end
-  // 时若快照里的码位在最终文本中消失，即剥离发生在解析层之外的证据。
-  // 若剥离发生在更上游（流事件本身已剥），快照恒空，本探测零成本闲置。
+  // Hole 3 | stream-loss detection: snapshot at-risk codepoints during message_update;
+  // if one vanishes from the final text, the strip happened beyond the parser.
+  // Upstream stripping (already gone in stream events) leaves the snapshot empty; this idles for free.
   const streamSeenCps = new Set<number>();
   let streamTracking = false;
 
@@ -1098,42 +1098,42 @@ export default function (pi: ExtensionAPI) {
     if (texts.length > 0) streamTracking = true;
     for (const ch of texts) {
       const cp = ch.codePointAt(0)!;
-      if (isAtRisk(cp)) streamSeenCps.add(cp); // 收窄：emoji/普通增补字符改稿不是传输丢失
+      if (isAtRisk(cp)) streamSeenCps.add(cp); // narrowed: emoji/plain-astral edits are not transit loss
     }
   });
 
-  // 系统提示注入输出协议（每轮生效）
+  // Inject the output protocol into the system prompt (every turn)
   pi.on("before_agent_start", async (event) => {
     return {
       systemPrompt:
         event.systemPrompt +
         `
 
-[nerdfont-unescape 输出协议]
-你的输出通道会静默丢弃 BMP 私有区字符（U+E000–U+F8FF；Nerd Font 的
-dev-/seti-/cod-/fa-/oct-/custom-/linux- 系图标全在此区，实测必丢）。
-增补私有区（U+F0000–U+FFFFD、U+100000–U+10FFFD，md- 系图标在此）、
-Tags 区（U+E0000–U+E007F）、非字符（U+FDD0–U+FDEF、各平面
-U+xFFFE/U+xFFFF）虽能通过通道，但你难以可靠地直接输出它们，也一律写成
-ASCII 转义：\\uXXXX 或 \\u{xxxx} 形式（如 python 图标写 \\uE235，md- 图标
-写 \\u{f031f}）。nerdfont-unescape 扩展会在消息落定时把它们还原成真
-字符（终端里直接显示为图标）。常规文字（CJK、emoji、零宽字符、变体
-选择符等）不受影响，直接写原字符即可。
-查找或核实码位时，优先调用 nerdfont_lookup 工具（查询本机 Nerd Font
-字形与码位，返回可直接粘贴的转义写法）；starship 默认符号直接查 "starship <module>"（工具内置其默认表，无需访问网络）。不要凭记忆猜码位，也不要
-自己写脚本扫描。
-未分配码位同样会被丢，一律转义（还原后终端显示为字体豆腐块属正常）。
-需要字面展示转义写法时写双反斜杠 \\uXXXX，客户端不会还原它。
-更省事：直接写 [[nf:图标名]] 语义标记（如 [[nf:python]]、[[nf:git-branch]]），
-客户端按本机字体解析成图标渲染；名称不确定就先查 nerdfont_lookup。
-代码段/围栏内的标记与转义一律不动。
-读取可能含图标或私有区字符的文件时，用 python 以码位输出而非原
-字符（输入方向同样会剥离 BMP 私有区）`,
+[nerdfont-unescape output protocol]
+Your output channel silently drops BMP Private Use characters (U+E000–
+U+F8FF; every Nerd Font dev-/seti-/cod-/fa-/oct-/custom-/linux- icon lives
+there — empirically always dropped). The supplementary PUA planes
+(U+F0000–U+FFFFD, U+100000–U+10FFFD, the md- icons), the Tags block
+(U+E0000–U+E007F), and noncharacters (U+FDD0–U+FDEF, U+xFFFE/U+FFFF
+on any plane) pass the channel, but you cannot emit them reliably either —
+write ALL of them as ASCII escapes: \\uXXXX or \\u{xxxx} (e.g. the python
+icon as \\uE235, md- icons as \\u{f031f}). The nerdfont-unescape extension
+restores them to real characters when the message lands (rendered as
+icons in the terminal). Ordinary text (CJK, emoji, zero-width chars,
+variation selectors) is unaffected — write those as-is.
+When looking up or verifying codepoints, prefer the nerdfont_lookup tool
+(local Nerd Font glyphs and codepoints, returns paste-ready escapes); starship defaults via "starship <module>" (baked in, no network).
+Never guess codepoints from memory and never write scanning scripts.
+Unassigned codepoints are dropped too — always escape them (a tofu box in the terminal after restoration is expected).
+To show an escape literally, write a double backslash \\uXXXX — the client will not restore it.
+Even simpler: write [[nf:name]] semantic markers (e.g. [[nf:python]], [[nf:git-branch]]);
+the client resolves them against local fonts and renders icons. Unsure about a name? Query nerdfont_lookup first.
+Markers and escapes inside code spans or fences are never touched.`
     };
   });
 
-  // 洞1｜输入侧防护：用户消息里的 at-risk 字符会被通道剥离（模型收不到）。
-  // 自动替换为 \uXXXX 转义（协议原生形态，模型可读），并告知用户。
+  // Hole 1 | input-side protection: at-risk chars in user messages are stripped by the channel
+  // (the model never receives them). Auto-replace with \uXXXX escapes (protocol-native, model-readable) and tell the user.
   pi.on("input", async (event, ctx) => {
     let text = event.text;
     const escaped: number[] = [];
@@ -1173,15 +1173,15 @@ ASCII 转义：\\uXXXX 或 \\u{xxxx} 形式（如 python 图标写 \\uE235，md-
         content.push(block);
         continue;
       }
-      const marked = await resolveNfMarkers(block.text, ctx?.ui?.notify?.bind(ctx.ui)); // ⓪ 语义标记 → 转义
-      const u = unescapeAtRisk(marked); // ① 还原转义
+      const marked = await resolveNfMarkers(block.text, ctx?.ui?.notify?.bind(ctx.ui)); // (0) semantic markers → escapes
+      const u = unescapeAtRisk(marked); // (1) restore escapes
       let text = u.text;
       restored += u.restored;
       restoredCps.push(...u.cps);
       substitutedCps.push(...u.substituted);
       hatched += u.hatched;
       if (ICON_CONTEXT.test(text)) {
-        // ② 痕迹补框（仅相关上下文，压误报）
+        // (2) trace filling (icon-context gated, keeps false positives down)
         const r = tofuFill(text);
         if (r.filled > 0) {
           text = r.text;
@@ -1193,10 +1193,10 @@ ASCII 转义：\\uXXXX 或 \\u{xxxx} 形式（如 python 图标写 \\uE235，md-
       else content.push({ ...block, text });
     }
 
-    // 洞3：流快照里的 at-risk 码位若在最终文本中消失 → 剥离证据
+    // Hole 3: an at-risk codepoint from the stream snapshot missing in the final text → strip evidence
     if (streamTracking && streamSeenCps.size > 0) {
-      // 用映射后（已还原）的文本比对：流里裸字符 + 终稿转义并成功还原
-      // 属于同一字符的两种形态，不该同时报 MISSING 与已还原（外部评审判例）
+      // Compare the POST-conversion text: a raw char in the stream plus a
+      // restored escape in the final message are one character in two shapes — reporting MISSING and restored together is a contradiction (review precedent)
       const finalText = (content as any[])
         .filter((b: any) => b?.type === "text" && typeof b.text === "string")
         .map((b: any) => b.text)
@@ -1214,15 +1214,15 @@ ASCII 转义：\\uXXXX 或 \\u{xxxx} 形式（如 python 图标写 \\uE235，md-
       streamTracking = false;
     }
 
-    // 仅逃生舱字面化也必须落盘改写（双反斜杠 → 单反斜杠展示）；
-    // 2026-10-28 外部评审判例：此前 hatched 不计数导致改写被这里丢弃（真实假绿）
+    // Hatch-only rewrites must still land (double → single backslash display);
+    // review precedent: hatched went uncounted once and this return dropped the rewrite (a real fake-green)
     if (restored === 0 && filled === 0 && substitutedCps.length === 0) {
-      if (hatched > 0) return { message: { ...msg, content } }; // 带上映射后的 content
+      if (hatched > 0) return { message: { ...msg, content } }; // carry the mapped content
       return;
     }
 
-    // ③ 告警：先说问题（丢什么、哪个码区），再说处置（补 □ / 已还原），
-    //    最后给建议；码区用语义名（rare Han ideographs、Egyptian Hieroglyphs…）
+    // (3) Reporting: the problem first (what was lost, which region), then the
+    //    action (□ fill / restored), then advice; regions get semantic names
     const restoredRegions = summarize(restoredCps);
     const restoredPart =
       restored > 0
@@ -1252,7 +1252,7 @@ ASCII 转义：\\uXXXX 或 \\u{xxxx} 形式（如 python 图标写 \\uE235，md-
 }
 
 /*
- * 更新 ASSIGNED_BMP_RAW（BMP 已分配区间随 Unicode 版本演进，约每年一版）：
+ * Refresh ASSIGNED_BMP_RAW when Unicode advances (yearly);
  *   python3 - <<'P'
  *   import unicodedata
  *   rs, s = [], None
@@ -1263,5 +1263,5 @@ ASCII 转义：\\uXXXX 或 \\u{xxxx} 形式（如 python 图标写 \\uE235，md-
  *   if s is not None: rs.append((s, 0xFFFF))
  *   print(','.join('%x-%x' % r for r in rs))
  *   P
- * 用输出替换 ASSIGNED_BMP_RAW 字符串即可（本表生成于 Unicode 16.0.0）。
+ * Replace the ASSIGNED_BMP_RAW string with the output (table generated on Unicode 16.0.0).
  */

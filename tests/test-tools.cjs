@@ -111,8 +111,8 @@ run(async () => {
   console.log("── ⑪ 系统提示注入（before_agent_start）");
   const r = await handlers["before_agent_start"]({ systemPrompt: "BASE" }, ctx);
   t("追加而非替换", r.systemPrompt.startsWith("BASE"));
-  t("协议块在场", r.systemPrompt.includes("nerdfont-unescape 输出协议") && r.systemPrompt.includes("\\uXXXX"));
-  t("含逃生舱说明", r.systemPrompt.includes("双反斜杠"));
+  t("协议块在场", r.systemPrompt.includes("nerdfont-unescape output protocol") && r.systemPrompt.includes("\\uXXXX"));
+  t("含逃生舱说明", r.systemPrompt.includes("double backslash"));
 
   console.log("── ⑫ 输入处理边角");
   let ir = await handlers["input"]({ type: "input", text: "普通文字", source: "interactive" }, ctx);
