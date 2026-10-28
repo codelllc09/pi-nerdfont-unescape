@@ -46,8 +46,6 @@ Glyph lookup and layout rendering additionally want `python3` with
 [fontTools](https://fonttools.readthedocs.io/) (`pip install fonttools`). Without
 them the extension still works and names the lookups it could not run.
 
-> Not released yet. Until then: `pi install /path/to/pi-nerdfont-unescape`.
-
 No runtime dependencies — `typebox` is declared as a *peer* because pi provides it.
 
 ## What changes for you

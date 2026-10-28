@@ -39,8 +39,6 @@ pi install npm:pi-nerdfont-unescape
 字形查询与排版渲染需要 `python3` + [fontTools](https://fonttools.readthedocs.io/)
 （`pip install fonttools`）。不装也能用，扩展只会在需要时说明哪些查询做不了。
 
-> 尚未发布。首发前请用 `pi install /path/to/pi-nerdfont-unescape`。
-
 本包没有运行时依赖；`typebox` 声明为 *peer*，因为 pi 已经提供。
 
 ## 装上之后
