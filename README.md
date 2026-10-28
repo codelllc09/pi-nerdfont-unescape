@@ -69,7 +69,7 @@ actually draw. The extension never guesses a codepoint.
 | What you see | Why | What to do |
 |---|---|---|
 | `□U+E5EE` in a message | that codepoint has no glyph in your terminal's font chain — or your font chain could not be identified | install a Nerd Font and set it as the terminal font; the marker names the exact codepoint |
-| An icon is missing entirely | the model wrote the raw character instead of an escape, and the channel dropped it before anything could see it | ask for the escape form (`\uE235`) or the `[[nf:name]]` marker |
+| An icon is missing entirely | the model wrote the raw character instead of an escape, and the output stream dropped it before anything could see it | ask for the escape form (`\uE235`) or the `[[nf:name]]` marker |
 | `could not be resolved — font lookup unavailable` | `python3` (or fontTools) is missing | `pip install fonttools`, or ignore it: everything else still works |
 | `\uE235` visible in a fenced block | intended: code stays literal so it can be copied | nothing to fix |
 
