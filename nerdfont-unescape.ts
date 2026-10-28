@@ -1052,7 +1052,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("before_agent_start", async (event) => {
     return {
       systemPrompt:
-        event.systemPrompt +
+        (event.systemPrompt ?? "") +
         `
 
 [nerdfont-unescape output protocol]

@@ -34,6 +34,8 @@ LLM 的 tokenizer 不认识私有区码位（Nerd Font 图标全在此区）。�
 pi install npm:pi-nerdfont-unescape
 ```
 
+> 尚未发布——首发前可从本地克隆安装：`pi install /path/to/pi-nerdfont-unescape`。
+
 ## 运行与测试依赖
 
 扩展本体运行时零依赖，但字形 ground truth（cmap 缓存）、`nerdfont_lookup`

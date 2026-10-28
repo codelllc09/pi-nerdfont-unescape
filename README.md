@@ -38,6 +38,9 @@ both directions:
 pi install npm:pi-nerdfont-unescape
 ```
 
+> Not yet published — until the first release, install from a local clone:
+> `pi install /path/to/pi-nerdfont-unescape`.
+
 ## Runtime & testing dependencies
 
 The core extension is dependency-free TypeScript at runtime, but the glyph

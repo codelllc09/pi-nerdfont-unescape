@@ -373,6 +373,12 @@ const t = (name, ok, detail = "") => {
   }
   }
 
+  console.log("── ⑲ 自评加固");
+  {
+    const rp = await h["before_agent_start"]?.({}, ctx);
+    t("缺systemPrompt不产生undefined", typeof rp?.systemPrompt === "string" && !rp.systemPrompt.startsWith("undefined") && rp.systemPrompt.includes("nerdfont-unescape output protocol"), JSON.stringify(rp?.systemPrompt?.slice(0, 24)));
+  }
+
   console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error("套件崩溃:", e); process.exit(1); });
