@@ -1,505 +1,544 @@
 #!/usr/bin/env node
 /**
- * mutation-audit.cjs — 用代码审计测试：逐个故意改坏扩展源码（变异），
- * 对应测试必须变红；红不了的测试 = 摆设（从未能证明自己会失败）。
+ * test-nerdfont-unescape.cjs — nerdfont-unescape 全量回归套件
  *
- * 运行: node tests/mutation-audit.cjs   （不改动仓库内源文件，变异体写 /tmp）
- *   --jobs N     并行 worker 数（默认 CPU-1，上限 16）
- *   --only 正则  只跑名字匹配的变异（锚点仍全量校验）
- *   --from N     从第 N 条开始（配合 --only 做断点续跑）
- *   --list       只列出变异名，不执行
- *   --fresh      忽略续跑日志，从头审计
- * 幂等/续跑: 每条变异完成即写入 /tmp/pi-mutation-journal-<源码哈希>.json；
- *   中断后原样重跑会跳过已完成条目（源码或锚点变化则日志自动失效）。
- *   所有中间产物都在 /tmp 且按 pid 命名，重复运行互不干扰。
- * 进度: 每条变异完成即打印 [i/N] 耗时 结果 名称 ETA；锚点过期在开跑前 1 秒内报错。
- * 原则: 测试的对错交给代码——本审计零模型参与，退出码即结论。
+ * 运行: node ~/.pi/agent/extensions/tests/test-nerdfont-unescape.cjs
+ * 前置: 需已构建 cmap 缓存（~/.cache/pi-nerdfont-unescape/cmap.json，
+ *       session_start 会自动构建；或直接跑本套件前开一次 pi）。
  *
- * 判定：
- *   - 无效变异（没杀死任何测试）→ 审计失败
- *   - 从未变红过的测试名 → 审计失败（装饰品）
+ * ⚠ 本套件防"假绿"备忘（2026-10-27 判例，两条都真实发生过）：
+ *   1. JS 正则 \uXXXX 只匹配 4 位十六进制——判断 5 位码位是否在场，
+ *      必须用 [...s].some(ch => ch.codePointAt(0) === cp)，别写 /[\uf308]/
+ *   2. 输入转义要单反斜杠（源码 "\\ue235"），双反斜杠走字面逃生舱，
+ *      测不到保护逻辑——套件里的「逃生舱」用例专门测双反斜杠路径
+ *   3. 单测全绿 ≠ 正确：真实消息的 Markdown 形态（双反引号包裹等）
+ *      可能绕过保护。重要改动须配合 vision-verify.py 做端到端视觉验证。
  */
-const { spawn, spawnSync } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { spawnSync } = require("child_process");
 
-const ROOT = __dirname + "/..";
-const SRC = path.join(ROOT, "nerdfont-unescape.ts");
-const MUTATED = "/tmp/pi-mutated-ext.ts";
-const AUDIT_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "pi-nf-audit-"));
-const AUDIT_CACHE = path.join(AUDIT_DIR, "cmap.json");
-const SUITES = {
-  1: path.join(ROOT, "tests/test-nerdfont-unescape.cjs"),
-  2: path.join(ROOT, "tests/test-tools.cjs"),
+// Tests must never touch the user's production cache. The mutation auditor may
+// provide a reusable isolated cache; direct runs get their own temporary one.
+let ownedCacheDir = null;
+if (!process.env.PI_NF_CMAP_CACHE) {
+  ownedCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-nf-test-"));
+  process.env.PI_NF_CMAP_CACHE = path.join(ownedCacheDir, "cmap.json");
+  process.on("exit", () => fs.rmSync(ownedCacheDir, { recursive: true, force: true }));
+}
+
+const mod = require("./lib.cjs").jitiLoad();
+
+const h = {}; const notes = [];
+mod.default({ registerTool: () => {}, on: (e, f) => { h[e] = f; } });
+const ctx = { ui: { notify: (m, t) => notes.push(`[${t}] ${m}`) } };
+const hasCp = (s, cp) => [...s].some((ch) => ch.codePointAt(0) === cp);
+const end = async (text) => {
+  await h["message_start"]?.({}, {});
+  const r = await h["message_end"]({ message: { role: "assistant", content: [{ type: "text", text }] } }, ctx);
+  return r?.message?.content?.[0]?.text ?? text;
 };
 
-// 每条变异：锚点（源码中必须恰好出现一次）→ 替换 → 应杀死的测试所在套件
-const MUTATIONS = [
-  { name: "M1 还原禁用", suites: [1],
-    old: "return String.fromCodePoint(cp);", new: "return whole;" },
-  { name: "M2 括号形式失效", suites: [1],
-    old: "const cp = parseInt(brace ?? plain!, 16);", new: 'const cp = parseInt(plain ?? "10ffff", 16);' },
-  { name: "M3 逃生舱失效", suites: [1],
-    old: "if (aBrace !== undefined || aPlain !== undefined) {\n        hatched++; // hatch: double backslash → single-backslash literal display\n        return whole.slice(1);\n      }",
-    new: "if (aBrace !== undefined || aPlain !== undefined) {\n        return whole;\n      }" },
-  { name: "M4 可见替换失效", suites: [1],
-    old: "if (isInherentlyInvisible(cp) || notInFonts) {", new: "if (false) {" },
-  { name: "M5 补框禁用", suites: [1],
-    old: "if (ICON_CONTEXT.test(text)) {", new: "if (false) {" },
-  { name: "M7 围栏失效(还原通道)", suites: [1, 2], count: 2,
-    old: "const FENCE = /^[ \\t]*(`{3,}|~{3,})/;", new: "const FENCE = /^(?!x)x/;" },
-  { name: "M8 行内保护失效", suites: [1, 2],
-    old: ".map((seg) => (seg.protected ? seg.text : processSegment(seg.text)))",
-    new: ".map((seg) => processSegment(seg.text))" },
-  { name: "M9 输入禁用", suites: [1, 2],
-    old: 'return { action: "transform", text: out };', new: 'return { action: "continue" };' },
-  { name: "M10 流快照禁用", suites: [1],
-    old: "streamSeenCps.add(cp);", new: "void cp;" },
-  { name: "M11 流比较失效(恒报丢失)", suites: [1, 2],
-    old: "(cp) => !finalText.includes(String.fromCodePoint(cp)) && !finalText.includes(visibleMarker(cp)),", new: "() => true," },
-  { name: "M12 注入不追加", suites: [2],
-    old: "(event.systemPrompt ?? \"\") +", new: '"" +' },
-  { name: "M13a 注入无协议名", suites: [2],
-    old: "[nerdfont-unescape output protocol]", new: "[protocol]" },
-  { name: "M13b 注入无逃生舱说明", suites: [2],
-    old: "write a double backslash \\\\uXXXX — the client will not restore it", new: "write a doubled backslash \\\\uXXXX" },
-  { name: "M14 lookup 查询失效", suites: [2],
-    old: '["-c", NF_LOOKUP_PY, String(params.query), String(params.limit ?? 20)],',
-    new: '["-c", NF_LOOKUP_PY, "__nomatch__", String(params.limit ?? 20)],' },
-  { name: "M15 lookup 致崩", suites: [2],
-    old: 'async execute(_toolCallId, params) {\n      const out = await new Promise<string>((resolve) => {\n        execFile(\n          "python3",\n          ["-c", NF_LOOKUP_PY,',
-    new: 'async execute(_toolCallId, params) {\n      throw new Error("mutated");\n      const out = await new Promise<string>((resolve) => {\n        execFile(\n          "python3",\n          ["-c", NF_LOOKUP_PY,' },
-  { name: "M16 render 内容失效", suites: [2],
-    old: 'child.stdin?.end(params.content ?? "");', new: 'child.stdin?.end("__mutated__");' },
-  { name: "M17 通知计数失效", suites: [2],
-    old: "(c === 1 ? n : `${n} ×${c}`)", new: "(n)" },
-  { name: "M18 流角色检查失效", suites: [2], count: 2,
-    old: 'if (msg?.role !== "assistant" || !Array.isArray(msg.content)) return;',
-    new: "if (!Array.isArray(msg.content)) return;" },
-  { name: "M19 工具注册禁用", suites: [2], count: 2,
-    old: "  pi.registerTool({", new: "  if (false) pi.registerTool({" },
-  { name: "M20 render 边框失效", suites: [2],
-    old: 'params.frame ?? "none"', new: '"none"' },
-  { name: "M21 render 写盘失效", suites: [2],
-    old: 'params.writePath ?? ""', new: '""' },
-  { name: "M22 输入恒转换", suites: [2],
-    old: 'if (escaped.length === 0) return { action: "continue" };',
-    new: 'if (false) return { action: "continue" };' },
-  { name: "M23 输入通知级别翻转", suites: [2],
-    old: 'the model receives the escapes`,\n      "warning",',
-    new: 'the model receives the escapes`,\n      "info",' },
-  { name: "M24 六位码位退回", suites: [1],
-    old: "const ONE_PASS = /\\\\{2}u(?:\\{([0-9a-fA-F]{1,6})\\}|([0-9a-fA-F]{4}))|\\\\u(?:\\{([0-9a-fA-F]{1,6})\\}|([0-9a-fA-F]{4}))/g;",
-    new: "const ONE_PASS = /\\\\{2}u(?:\\{([0-9a-fA-F]{1,5})\\}|([0-9a-fA-F]{4}))|\\\\u(?:\\{([0-9a-fA-F]{1,5})\\}|([0-9a-fA-F]{4}))/g;" },
-  { name: "M26 围栏状态机退回", suites: [1],
-    old: "        if (!fenceOpen) {\n          fenceOpen = { ch: run[0], len: run.length }; // opening line may carry an info string (```js)\n        } else if (\n          run[0] === fenceOpen.ch &&\n          run.length >= fenceOpen.len &&\n          /^[ \\t]*$/.test(rest) // closing line must be a pure fence (```x does not close, CommonMark)\n        ) {\n          fenceOpen = null;\n        }",
-    new: "        fenceOpen = fenceOpen ? null : { ch: run[0], len: 1 }; void rest; // 任意围栏线翻转" },
-  { name: "M27 流跟踪放宽回宽区间", suites: [1],
-    old: "if (isAtRisk(cp)) streamSeenCps.add(cp); // narrowed: emoji/plain-astral edits are not transit loss",
-    new: "if (cp >= 0xe000 && cp <= 0x10fffd) streamSeenCps.add(cp);" },
-  { name: "M28 写盘护栏旁路", suites: [2],
-    old: "if (!inside(cwd) && !inside(tmp)) {",
-    new: "if (false) {" },
-  { name: "M29 render六位退回", suites: [2],
-    old: "0 < k - j - 1 <= 6",
-    new: "0 < k - j - 1 < 6" },
-  { name: "M30 逃生舱落盘旁路", suites: [1],
-    old: "if (hatched > 0 || contentChanged) {",
-    new: "if (false) {" },
-  { name: "M31 流比对回原始文本", suites: [1],
-    old: "const finalText = (content as any[])",
-    new: "const finalText = (msg.content as any[])" },
-  { name: "M32 六位预览裸字退回", suites: [2],
-    old: "        elif 0xF0000 <= o <= 0x10FFFD:\n            r.append(BS + \"u{%X}\" % o)  # supplementary PUA must also surface as an escape literal (channel-safe)\n        else:\n            r.append(c)",
-    new: "        else:\n            r.append(c)" },
-  { name: "M33 非法码位校验退回", suites: [2],
-    old: "out.append(chr(v) if v <= 0x10FFFF else \"[U+%X]\" % v)  # beyond the codespace: visible marker, not a crash",
-    new: "out.append(chr(v))" },
-  { name: "M34 闭合纯度退回", suites: [1],
-    old: "run.length >= fenceOpen.len &&\n          /^[ \\t]*$/.test(rest) // closing line must be a pure fence (```x does not close, CommonMark)",
-    new: "run.length >= fenceOpen.len && true" },
-  { name: "M35 真路径判定退回", suites: [2],
-    old: "const realAbs = fsMod.existsSync(abs)\n          ? fsMod.realpathSync(abs)\n          : pathMod.join(fsMod.realpathSync(pathMod.dirname(abs)), pathMod.basename(abs));",
-    new: "const realAbs = abs;" },
-  { name: "M36 语义标记失效", suites: [1],
-    old: "const NF_MARKER = /\\[\\[nf:([a-z0-9_.-]{1,40})\\]\\]/gi;",
-    new: "const NF_MARKER = /(?!x)x/gi;" },
-  { name: "M38 快速通道退回小写", suites: [1],
-    old: "if (!/\\[\\[nf:/i.test(text)) return text;",
-    new: 'if (!text.includes("[[nf:")) return text;' },
-  { name: "M39 别名表清空", suites: [1],
-    old: 'ALIAS = {"git-branch": "branch", "node-js": "nodejs", "node.js": "nodejs", "macos": "apple"}',
-    new: "ALIAS = {}" },
-  { name: "M40 缓存迁移旁路", suites: [1],
-    old: "if (!(g[NF_CACHE] && typeof g[NF_CACHE] === \"object\" && g[NF_CACHE].map instanceof Map)) {",
-    new: "if (false) {" },
-  { name: "M41 签名失效旁路", suites: [1],
-    old: "if (store.sig !== curSig) {",
-    new: "if (false) {" },
-  { name: "M45 全局签名旁路", suites: [1],
-    old: "const curSig = (globalThis as any)[CMAP_SIG] as string | undefined;",
-    new: "const curSig: string | undefined = undefined;" },
-  { name: "M46 名字长度上限移除", suites: [1],
-    old: "const VALID_NAME = /^[a-z0-9_.-]{1,40}$/i; // exactly NF_MARKER's rule: charset + length cap",
-    new: "const VALID_NAME = /^[a-z0-9_.-]+$/i;" },
-  { name: "M47 宽松扫描收窄", suites: [1],
-    old: "const LOOSE_NF = /\\[\\[nf:([^\\[\\]\\n]*)\\]\\]/gi;",
-    new: "const LOOSE_NF = /\\[\\[nf:([^\\[\\]\\n]{1,60})\\]\\]/gi;" },
-  { name: "M56 空引号补框复活", suites: [1],
-    old: "  let filled = 0;\n  const cps: number[] = [];",
-    new: "  let filled = 0;\n  const cps: number[] = [];\n  const __n0 = (text.match(/□/g) || []).length; text = text.replace(/''/g, \"'□'\"); filled += (text.match(/□/g) || []).length - __n0;" },
-  { name: "M57 未知字体乐观退回", suites: [1],
-    old: "const notInFonts = cmap === undefined || !inRanges(cmap, cp);",
-    new: "const notInFonts = cmap !== undefined && !inRanges(cmap, cp);" },
-  { name: "M64 围栏CR剥离移除", suites: [1],
-    old: 'const stripCr = (s: string): string => s.replace(/\\r$/, "");',
-    new: 'const stripCr = (s: string): string => s;' },
-  { name: "M65 Lua行尾CR容忍移除", suites: [1],
-    old: '[ \\t]*\\r?$/; // 4-6 hex',
-    new: '[ \\t]*$/; // 4-6 hex' },
-  { name: "M66 补框CR位置丢失", suites: [1],
-    old: 'const cr = m.endsWith("\\r") ? "\\r" : "";',
-    new: 'const cr = "";' },
-  { name: "M63 input类型守卫移除", suites: [1],
-    old: 'if (typeof text !== "string") return { action: "continue" };',
-    new: "if (false) return { action: \"continue\" };" },
-  { name: "M62 空提示词兜底移除", suites: [1],
-    old: "(event.systemPrompt ?? \"\") +",
-    new: "event.systemPrompt +" },
-  { name: "M58 码位注释风险门移除", suites: [1],
-    old: "if (!isAtRisk(cp)) return m; // e.g. U+0041 'A': a safe codepoint, nothing was dropped",
-    new: "void cp;" },
-  { name: "M60 合规检查退回全文档", suites: [1],
-    old: "if (seg.includes(String.fromCodePoint(cp)) || seg.includes(marker)) return m;",
-    new: "if (text.includes(String.fromCodePoint(cp)) || text.includes(marker)) return m;" },
-  { name: "M61 标记识别移除", suites: [1],
-    old: "const marker = visibleMarker(cp);\n      if (seg.includes(String.fromCodePoint(cp)) || seg.includes(marker)) return m;",
-    new: "void cp;\n      if (seg.includes(String.fromCodePoint(cp))) return m;" },
-  { name: "M59 码位注释六位退回", suites: [1],
-    old: "const LUALINE = /(--[ \\t]*U\\+[0-9A-Fa-f]{4,6})[ \\t]*\\r?$/; // 4-6 hex (PUA-B needs 6); \\r? = CRLF tolerance",
-    new: "const LUALINE = /(--[ \\t]*U\\+[0-9A-Fa-f]{4,5})[ \\t]*\\r?$/;" },
-  { name: "M48 批量截断为首名", suites: [1],
-    old: '`resolve:${uncached.join(",")}`',
-    new: '`resolve:${uncached[0]}`' },
-  { name: "M49 签名写回错误基准", suites: [1], slow: true,
-    old: "store.sig = curSig; // write back the comparison basis (a module-local here re-cleared every message)",
-    new: "store.sig = cmapSig;" },
-  { name: "M50 热升级恢复旁路", suites: [1], slow: true,
-    old: "if (typeof g[CMAP_SIG] !== \"string\") {\n      if (!loadCmapCache()) {\n        buildCmapCache(notify);\n        return;\n      }\n    }\n    checkCmapSignature(notify);",
-    new: "if (false) { void g; }\n    void notify;" },
-  { name: "M51 reload核验旁路", suites: [1], slow: true, count: 2,
-    old: "checkCmapSignature(notify);",
-    new: "void notify;" },
-  { name: "M52 损坏缓存宽容退回", suites: [1], slow: true,
-    old: "if (data.schema !== 2 || !validRanges(data.ranges) || typeof data.sig !== \"string\" || data.sig.length === 0) return false;",
-    new: "if (!Array.isArray(data.ranges)) return false;" },
-  { name: "M53 模板转义腐坏退回", suites: [1], slow: true,
-    old: 'h.update(("%s:%d:%d\\\\n" % (p, st.st_size, st.st_mtime_ns)).encode())',
-    new: 'h.update(("%s:%d:%d\\n" % (p, st.st_size, st.st_mtime_ns)).encode())' },
-  { name: "M54 并发重建去重旁路", suites: [1], slow: true,
-    old: "if (state.building) return;",
-    new: "if (false) return;" },
-  { name: "M55 签名核验失败静默", suites: [1], slow: true,
-    old: "console.error(`[nerdfont-unescape] cmap signature check FAILED: ${reason}`);\n        notify?.(msg, \"warning\");",
-    new: "console.error(`[nerdfont-unescape] cmap signature check FAILED: ${reason}`);" },
-  { name: "M42 失败缓存永久化", suites: [1],
-    old: "const uncached = [...wanted].filter((n) => cache.get(n) == null);",
-    new: "const uncached = [...wanted].filter((n) => !cache.has(n));" },
-  { name: "M43 非法标记告警移除", suites: [1],
-    old: "if (invalid.size > 0) {",
-    new: "if (false) {" },
-  { name: "M44 vscode 别名反伤回归", suites: [1],
-    old: 'ALIAS = {"git-branch": "branch", "node-js": "nodejs", "node.js": "nodejs", "macos": "apple"}',
-    new: 'ALIAS = {"git-branch": "branch", "node-js": "nodejs", "node.js": "nodejs", "macos": "apple", "vscode": "visual-studio-code"}' },
-  { name: "M37 未知名假解析", suites: [1],
-    old: "const raw = cache.get(k);",
-    new: "const raw = cache.get(k) ?? 0xe235;" },
-  { name: "M67 非图标码位放行", suites: [1],
-    old: "cp === null ? null : isAtRisk(cp) ? cp : -cp",
-    new: "cp === null ? null : cp" },
-  { name: "M68 损坏全局range击穿", suites: [1],
-    old: "if (!Array.isArray(range) || range.length !== 2) return false;",
-    new: "void range;" },
-  { name: "M69 可见标记不算最终存在", suites: [1],
-    old: "(cp) => !finalText.includes(String.fromCodePoint(cp)) && !finalText.includes(visibleMarker(cp)),",
-    new: "(cp) => !finalText.includes(String.fromCodePoint(cp))," },
-  { name: "M70 Emoji宽度退回单列", suites: [2],
-    old: 'width = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1',
-    new: 'width = 1' },
-  { name: "M71 render CRLF剥离移除", suites: [2],
-    old: 'src = [unesc(l[:-1] if l.endswith("\\\\r") else l) for l in content.split("\\\\n")]',
-    new: 'src = [unesc(l) for l in content.split("\\\\n")]' },
-  { name: "M81 不可用误报为未知名", suites: [1],
-    old: "const bucket = resolverUnavailable ? unavailable : unresolved;",
-    new: "const bucket = unresolved;" },
-  { name: "M79 分配表顺序破坏", suites: [1],
-    old: '"0-377,37a-37f',
-    new: '"377-0,37a-37f' },
-  { name: "M80 分配表丢已分配项", suites: [1],
-    old: '"0-377,37a-37f',
-    new: '"0-40,37a-37f' },
-  { name: "M78 自我输出二次处理", suites: [1],
-    old: "if (emittedTexts().includes(joinBlocks(msg.content))) return;",
-    new: "if (false) return;" },
-  { name: "M77 协议注入不幂等", suites: [2],
-    old: 'if ((event.systemPrompt ?? "").includes(PROTOCOL_TITLE)) return;',
-    new: "if (false) return;" },
-  { name: "M73 宽度守卫移除", suites: [2],
-    old: "if (params.width !== undefined && (!Number.isInteger(params.width) || params.width < 1 || params.width > 10000)) {",
-    new: "if (false) {" },
-  { name: "M74 边框守卫移除", suites: [2],
-    old: 'if (params.frame !== undefined && !["none", "ascii", "double"].includes(params.frame)) {',
-    new: "if (false) {" },
-  { name: "M75 writePath接线断开", suites: [2],
-    old: 'params.frame ?? "none", params.writePath ?? ""],',
-    new: 'params.frame ?? "none", ""],' },
-  { name: "M76 族优先级顺序错乱", suites: [2],
-    old: 'FAM = ("pl", "linux", "fae", "fa", "oct", "md", "seti", "dev", "cod", "custom", "ie", "weather")',
-    new: 'FAM = ("pl", "linux", "fae", "dev", "oct", "md", "seti", "fa", "cod", "custom", "ie", "weather")' },
-  { name: "M72 显式终端字体来源失真", suites: [1], slow: true,
-    old: 'return found, "explicit"', count: 2,
-    new: 'return found, "mutated"' },
-  { name: "M73 lookup忽略显式终端字体", suites: [1, 2],
-    old: "fonts, font_source = discover_fonts()",
-    new: 'fonts, font_source = [], "mutated"' },
-];
-
-const src = fs.readFileSync(SRC, "utf8");
+let pass = 0, fail = 0;
+const t = (name, ok, detail = "") => {
+  console.log(`  ${ok ? "✓" : "✗"} ${name}${ok ? "" : "  " + detail}`);
+  ok ? pass++ : fail++;
+};
 
 (async () => {
+  await h["session_start"]?.({}, {}); // 载入 cmap
+  // cmap 就绪等待：磁盘缓存无效时构建是异步的，早期用例（③可见替换）
+  // 依赖 cmap 在场——不等待会环境性假红（第八轮判例）
+  for (let i = 0; i < 40 && !globalThis[Symbol.for("pi.nerdfontUnescape.cmap")]; i++) {
+    await new Promise((r) => setTimeout(r, 3000));
+  }
 
-// ── CLI ────────────────────────────────────────────────────────
-const argv = process.argv.slice(2);
-function flag(name, fallback) {
-  const k = argv.indexOf(`--${name}`);
-  return k >= 0 && argv[k + 1] !== undefined ? argv[k + 1] : fallback;
-}
-const JOBS = Math.max(1, Math.min(16, Number(flag("jobs", Math.max(1, os.cpus().length - 1))) || 1));
-const onlyRe = flag("only", null) ? new RegExp(flag("only"), "i") : null;
-const fromIdx = Number(flag("from", "0")) || 0;
-if (argv.includes("--list")) {
-  MUTATIONS.forEach((m, i) => console.log(`${String(i + 1).padStart(3)}  ${m.name}`));
-  process.exit(0);
-}
 
-// ── ANCHOR VALIDATION FIRST ────────────────────────────────────
-// A stale anchor used to abort the run AFTER ~20 minutes of unrelated work.
-// Validate every anchor before spawning anything: failures surface in ~1s.
-const anchorErrors = [];
-for (const mu of MUTATIONS) {
-  const want = mu.count ?? 1;
-  const count = src.split(mu.old).length - 1;
-  if (count !== want) anchorErrors.push(`${mu.name}: anchor matched ${count}x (want ${want})`);
-  if (mu.old === mu.new) anchorErrors.push(`${mu.name}: old === new (no mutation)`);
-}
-if (anchorErrors.length) {
-  anchorErrors.forEach((e) => console.error(`✗ ${e}`));
-  console.error("审计中止：先修锚点（这不是测试失败）");
-  process.exit(1);
-}
+  console.log("── ① 转义还原");
+  let a = await end("图标 \\ue235 与 \\u{f0805} Azure");
+  t("4位形式还原", hasCp(a, 0xe235));
+  t("括号形式还原", hasCp(a, 0xf0805));
 
-const SELECTED = MUTATIONS.slice(fromIdx).filter((m) => !onlyRe || onlyRe.test(m.name));
+  a = await end("PUA-B \\u{100000} 与 \\u{10fffd}");
+  // 六位码位在本机字体必无字形 → 走可见替换而非还原（正则六位支持是前提）
+  t("六位码位(PUA-B)可见标记", a.includes("□U+100000") && a.includes("□U+10FFFD"), JSON.stringify(a));
 
-// ── Resume journal（幂等续跑）─────────────────────────────────
-// Keyed by a hash of the extension source: any code change invalidates the
-// whole journal automatically, so a stale entry can never fake a green run.
-const crypto = require("crypto");
-const sha = (s) => crypto.createHash("sha256").update(s).digest("hex");
-const SRC_HASH = sha(src);
-const JOURNAL = path.join("/tmp", `pi-mutation-journal-${SRC_HASH.slice(0, 12)}.json`);
-function loadJournal() {
-  if (argv.includes("--fresh")) return { srcHash: SRC_HASH, entries: {} };
-  try {
-    const j = JSON.parse(fs.readFileSync(JOURNAL, "utf8"));
-    if (j.srcHash === SRC_HASH && j.entries) return j;
-  } catch {}
-  return { srcHash: SRC_HASH, entries: {} };
-}
-const journal = loadJournal();
-function saveJournal() {
-  const tmp = `${JOURNAL}.${process.pid}`;
-  fs.writeFileSync(tmp, JSON.stringify(journal));
-  fs.renameSync(tmp, JOURNAL); // atomic replace: a kill mid-write cannot corrupt it
-}
-if (!SELECTED.length) {
-  console.error("没有匹配的变异");
-  process.exit(1);
-}
+  console.log("── ② 字面逃生舱（双反斜杠）");
+  a = await end("字面写法 \\\\ue235 不还原");
+  // 2026-10-28 外部评审判例：旧断言单/双反斜杠都能过（includes 子串两侧通吃），
+  // 且 ?? 回退掩盖了改写被丢弃——收紧为「单在场 + 双绝迹 + 真字符绝迹」
+  t("双反斜杠保持字面", a.includes("\\ue235") && !a.includes("\\\\ue235") && !hasCp(a, 0xe235), JSON.stringify(a));
 
-// ── Isolation ──────────────────────────────────────────────────
-// Each worker gets its own mutated file and its own cache copy, so concurrent
-// mutants can never read each other's extension or poison a shared cache.
-function paths(worker) {
-  return {
-    ext: path.join("/tmp", `pi-mutated-${process.pid}-${worker}.ts`),
-    cache: path.join(AUDIT_DIR, `cmap-${process.pid}-${worker}.json`),
+  a = await end("字面 \\\\u{100000} 保持"); // 源码四反斜杠 = 实际双反斜杠（逃生舱入口）
+  t("六位逃生舱保持字面", a.includes("\\u{100000}") && !a.includes("\\\\u{100000}") && !a.includes("□U+100000"), JSON.stringify(a));
+
+  console.log("── ③ 不可见码位 → 可见标记");
+  a = await end("\\ufdd0 \\u{e0041} \\u0378");
+  t("非字符", a.includes("□U+FDD0"), JSON.stringify(a));
+  t("Tags(括号形式)", a.includes("□U+E0041"));
+  t("未分配BMP", a.includes("□U+0378"));
+  a = await end("字体没有的 \\ue5ee");
+  t("cmap判定替换", a.includes("□U+E5EE"), JSON.stringify(a));
+
+  console.log("── ④ 观测层（证据性补框 + 保守降级）");
+  {
+    const noTouch = "icon value = '' 和 \"\" 与 ` ` 保持原样";
+    const before = notes.length;
+    a = await end(noTouch);
+    t("空引号逐字节不变+零通知", a === noTouch && notes.length === before, JSON.stringify(a));
+  }
+  {
+    const safeCp = "icon annotation: -- U+0041";
+    const before2 = notes.length;
+    a = await end(safeCp);
+    t("安全码位不补框+零通知", a === safeCp && notes.length === before2, JSON.stringify(a));
+  }
+  a = await end("present \\ue235\nicon lost: -- U+E235");
+  t("跨行同码位不压制", (a.split("\n")[1] ?? "").includes("-- U+E235 □"), JSON.stringify(a));
+  a = await end("icon \\ue235 same line: -- U+E235");
+  t("同段同码位仍压制", !a.includes("□"), JSON.stringify(a));
+  // 可见替代标记=已处置：转义已抵达、仅字体状态未知，不是模型丢失（第十一轮外部评审）
+  {
+    const CSTK3 = Symbol.for("pi.nerdfontUnescape.cmap");
+    const saved3 = globalThis[CSTK3];
+    delete globalThis[CSTK3];
+    notes.length = 0;
+    a = await end("icon \\ue235 same line: -- U+E235");
+    globalThis[CSTK3] = saved3;
+    t("未知字体标记不重复处置", (a.match(/□/g) ?? []).length === 1 && !notes.some((n) => n.includes("likely dropped")), JSON.stringify(a) + "|" + notes.join(";"));
+  }
+  a = await end("icon \\ue5ee same line: -- U+E5EE");
+  t("已知缺字标记不重复处置", (a.match(/□/g) ?? []).length === 1 && !a.includes("-- U+E5EE □"), JSON.stringify(a));
+  a = await end("icon lost: -- U+100000");
+  t("六位码位注释补框", a.includes("-- U+100000 □"), JSON.stringify(a));
+  a = await end("icon lost: -- U+E235");
+  t("Lua注释补框(证据性)", a.includes("-- U+E235 □"), JSON.stringify(a));
+  // 输入不含该码位的其他形态——合规检查不能代偿，围栏保护独立受审
+  a = await end("icon\n```\n-- U+E235\n```\n尾部无转义");
+  t("围栏内Lua不补", (a.split("\n")[2] ?? "") === "-- U+E235", JSON.stringify(a));
+  {
+    const CSTK = Symbol.for("pi.nerdfontUnescape.cmap");
+    const savedCmap = globalThis[CSTK];
+    delete globalThis[CSTK];
+    a = await end("\\ue235 字体未知");
+    globalThis[CSTK] = savedCmap; // 恢复现场
+    t("cmap未知保守替换", a.includes("□U+E235") && !hasCp(a, 0xe235), JSON.stringify(a));
+  }
+
+  console.log("── ⑤ 围栏保护");
+  a = await end('外面 \\ue235\n```\nx = "\\ue0b0"\n```\n后 \\uf308');
+  t("围栏内保持字面", a.includes('"\\ue0b0"'), JSON.stringify(a));
+  t("围栏外还原", hasCp(a, 0xe235) && hasCp(a, 0xf308));
+
+  a = await end("```\n内 \\ue0b0\n~~~\n仍内 \\ue0b0\n```\n外 \\ue235");
+  t("异种围栏不闭合", (a.match(/\\ue0b0/g) || []).length === 2 && hasCp(a, 0xe235), JSON.stringify(a));
+
+  a = await end("```\n内文 \\ue0b0\n```x\n仍内 \\ue0b0\n```\n外 \\ue235");
+  t("非纯围栏行不闭合", a.includes("仍内 \\ue0b0") && !hasCp(a, 0xe0b0) && hasCp(a, 0xe235), JSON.stringify(a));
+
+  console.log("── ⑥ 行内代码段保护（v2 等长定界符）");
+  // 回归 2026-10-27: 双反引号包裹形态曾绕过 v1 保护
+  a = await end('| `` `symbol = "\\ue0b0"` `` 行内段 |');
+  t("双反引号包裹[回归]", a.includes('"\\ue0b0"') && !hasCp(a, 0xe0b0), JSON.stringify(a));
+  a = await end("单段 `x \\ue235` 段外 \\ue0a0");
+  t("单反引号段", a.includes("`x \\ue235`") && !hasCp(a, 0xe235));
+  t("段间还原", hasCp(a, 0xe0a0));
+  a = await end("`a \\ue235` 中段 \\uf308 `b \\ue718` 悬挂 ` 尾 \\ue0a0");
+  t("同行多段+未闭合", a.includes("`a \\ue235`") && a.includes("`b \\ue718`") && hasCp(a, 0xe0a0));
+
+  console.log("── ⑦ 输入侧自动转义");
+  const ir = await h["input"]({ type: "input", text: "看 \ue235 图标", source: "interactive" }, ctx);
+  const it7 = ir.text ?? ""; // 防御：transform 失效时逐项变红而非套件崩溃
+  t("transform", ir.action === "transform");
+  t("无裸字符", ir.action === "transform" && !hasCp(it7, 0xe235) && it7.includes("\\ue235"), JSON.stringify(ir));
+
+  console.log("── ⑧ 流级丢失探测");
+  notes.length = 0;
+  await h["message_start"]?.({}, {});
+  await h["message_update"]({ message: { role: "assistant", content: [{ type: "text", text: "\ue235 在场" }] } }, ctx);
+  await h["message_end"]({ message: { role: "assistant", content: [{ type: "text", text: "在场" }] } }, ctx);
+  t("丢失被点名", notes.some((n) => n.includes("MISSING")), notes.join("|"));
+  notes.length = 0;
+  await h["message_start"]?.({}, {});
+  // 流与最终消息都真含 at-risk 字符（一致）——此前用纯文本，从没测过比较逻辑
+  const stable = "稳定 " + String.fromCodePoint(0xe235) + " 在场";
+  await h["message_update"]({ message: { role: "assistant", content: [{ type: "text", text: stable }] } }, ctx);
+  await h["message_end"]({ message: { role: "assistant", content: [{ type: "text", text: stable }] } }, ctx);
+  t("一致时无误报", !notes.some((n) => n.includes("MISSING")), notes.join("|"));
+
+  notes.length = 0;
+  await h["message_start"]?.({}, {});
+  const rocket = String.fromCodePoint(0x1f680) + " 起飞";
+  await h["message_update"]({ message: { role: "assistant", content: [{ type: "text", text: rocket }] } }, ctx);
+  await h["message_end"]({ message: { role: "assistant", content: [{ type: "text", text: "删掉emoji了" }] } }, ctx);
+  t("emoji改稿不误报", !notes.some((n) => n.includes("MISSING")), notes.join("|"));
+
+  notes.length = 0;
+  await h["message_start"]?.({}, {});
+  await h["message_update"]({ message: { role: "assistant", content: [{ type: "text", text: "图 " + String.fromCodePoint(0xe235) }] } }, ctx);
+  await h["message_end"]({ message: { role: "assistant", content: [{ type: "text", text: "图 \\ue235" }] } }, ctx);
+  const missN = notes.some((n) => n.includes("MISSING"));
+  const restoredN = notes.some((n) => n.includes("restored"));
+  t("流转义还原不矛盾", restoredN && !missN, JSON.stringify(notes));
+
+  // 2026-10-29 strict review: a missing-font substitution is still the same
+  // codepoint in a visible form; it must not also be reported as transit loss.
+  {
+    const CMAP = Symbol.for("pi.nerdfontUnescape.cmap");
+    const saved = globalThis[CMAP];
+    globalThis[CMAP] = [];
+    notes.length = 0;
+    await h["message_start"]?.({}, {});
+    await h["message_update"]({ message: { role: "assistant", content: [{ type: "text", text: String.fromCodePoint(0xe5ee) }] } }, ctx);
+    const markerEnd = await h["message_end"]({ message: { role: "assistant", content: [{ type: "text", text: "\\ue5ee" }] } }, ctx);
+    globalThis[CMAP] = saved;
+    const markerText = markerEnd?.message?.content?.[0]?.text ?? "";
+    t("流可见替换不矛盾", markerText.includes("□U+E5EE") && !notes.some((n) => n.includes("MISSING")), JSON.stringify(notes));
+  }
+
+  // 变异下解析可能崩溃——本段一律走防御式 end，失败归因到具体用例而非套件崩溃
+  const safeEnd = async (t) => {
+    try {
+      return await end(t);
+    } catch (e) {
+      return "崩溃: " + String(e);
+    }
   };
-}
-
-function runSuiteAsync(id, full, extPath, cachePath, worker) {
-  return new Promise((resolve) => {
-    const child = spawn("node", [SUITES[id]], {
-      env: { ...process.env, EXT_PATH: extPath, PI_NF_CMAP_CACHE: cachePath, ...(full ? {} : { SKIP_SLOW: "1" }) },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let out = "";
-    child.stdout.on("data", (d) => { out += d; });
-    child.stderr.on("data", (d) => { out += d; });
-    const timer = setTimeout(() => child.kill("SIGKILL"), 240000);
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      const failed = [];
-      for (const line of out.split("\n")) {
-        const m = line.match(/^  ✗ (.*)$/);
-        if (m) failed.push(m[1].split("  ")[0].trim());
-      }
-      resolve({
-        failed,
-        crashed: code !== 0 && failed.length === 0,
-        tail: out.split("\n").filter(Boolean).slice(-2).join(" | "),
-      });
-    });
+  console.log("── ⑭ [[nf:]] 语义标记");
+  a = await safeEnd("看 [[nf:python]] 图标");
+  t("标记解析渲染", !a.includes("[[nf:python]]") && (hasCp(a, 0xe235) || a.includes("□U+E235")), JSON.stringify(a));
+  // 2026-10-28 外部评审判例：快速通道曾只认小写 → [[NF:]] 被静默忽略（红线违规）
+  a = await safeEnd("大写 [[NF:python]] 标记");
+  t("大写标记解析", !a.includes("[[NF:python]]") && (hasCp(a, 0xe235) || a.includes("□U+E235")), JSON.stringify(a));
+  a = await safeEnd("分支 [[nf:git-branch]] 图标");
+  t("git-branch 别名解析", !a.includes("[[nf:git-branch]]") && (hasCp(a, 0xe0a0) || a.includes("□U+E0A0")), JSON.stringify(a));
+  // A Nerd Font also contains ordinary Unicode glyph names such as lambda.
+  // The semantic protocol must select the PUA icon, never silently keep the marker.
+  notes.length = 0;
+  a = await safeEnd("函数 [[nf:lambda]] 图标");
+  const hasPua = [...a].some((ch) => {
+    const cp = ch.codePointAt(0);
+    return (cp >= 0xe000 && cp <= 0xf8ff) || (cp >= 0xf0000 && cp <= 0x10fffd);
   });
-}
+  t("安全码位同名不吞语义标记", !a.includes("[[nf:lambda]]") && (hasPua || /□U\+[0-9A-F]{4,6}/.test(a)) && !notes.some((n) => n.includes("no such name")), JSON.stringify(a) + "|" + JSON.stringify(notes));
+  a = await safeEnd("```\n[[nf:python]]\n```");
+  t("围栏内标记不动", a.includes("[[nf:python]]"), JSON.stringify(a));
+  notes.length = 0;
+  a = await safeEnd("未知 [[nf:zzz_no_such]] 名");
+  t("未知名保留+点名", a.includes("[[nf:zzz_no_such]]") && notes.some((n) => n.includes("zzz_no_such")), JSON.stringify(notes));
 
-function fmtDur(ms) {
-  const s = Math.round(ms / 1000);
-  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s`;
-}
-
-// Baseline: one isolated, valid cache built from the unmutated source.
-const warm = runSuiteAsync(1, false, SRC, path.join(AUDIT_DIR, `cmap-warm-${process.pid}.json`), "warm");
-const warmR = await warm;
-const warmCache = path.join(AUDIT_DIR, `cmap-warm-${process.pid}.json`);
-if (warmR.crashed || warmR.failed.length || !fs.existsSync(warmCache)) {
-  console.error(`✗ 隔离 cmap 基线构建失败：${warmR.tail || warmR.failed.join(", ")}`);
-  process.exit(1);
-}
-const auditCacheBaseline = fs.readFileSync(warmCache);
-
-const killedBy = new Map(); // test name -> [mutation names]
-const ineffective = [];
-const crashedNote = [];
-
-// Idempotent start: sweep leftovers from killed workers (our own prefixes only,
-// older than 10 minutes so a concurrent run is never disturbed).
-try {
-  const now = Date.now();
-  for (const f of fs.readdirSync("/tmp")) {
-    if (!/^pi-mutated-\d+-\d+\.ts$/.test(f) && !/^pi-mutation-journal-.*\.json\.\d+$/.test(f)) continue;
-    const p2 = path.join("/tmp", f);
-    try { if (now - fs.statSync(p2).mtimeMs > 600000) fs.rmSync(p2, { force: true }); } catch {}
+  console.log("── ⑮ [[nf:]] 健壮性（缓存与语法）");
+  {
+    notes.length = 0;
+    a = await end("[[nf:alpha]] 与 [[nf:special]]");
+    const w = notes.find((n) => n.includes("alpha")) ?? "";
+    t(
+      "非图标同名不吞标记",
+      a.includes("[[nf:alpha]]") && w.includes("U+03B1") && !w.includes("no such name"),
+      JSON.stringify({ text: a, warn: w.slice(0, 120) }),
+    );
+  }  // 旧版裸 Map 遗留（reload 同进程）→ 必须安全重建而非崩溃（外部评审判例）
+  {
+    const CMAP = Symbol.for("pi.nerdfontUnescape.cmap");
+    const saved = globalThis[CMAP];
+    globalThis[CMAP] = [null]; // valid JSON shape at the outer level, corrupt range entry
+    const corrupt = await safeEnd("损坏缓存 \\ue235");
+    globalThis[CMAP] = saved;
+    t("损坏cmap不击穿消息", !corrupt.startsWith("崩溃:") && corrupt.includes("□U+E235"), JSON.stringify(corrupt));
   }
-} catch {}
-
-const resumed = SELECTED.filter((m) => journal.entries[m.name]?.oldHash === sha(m.old).slice(0, 16)).length;
-console.log(`变异审计：${SELECTED.length}/${MUTATIONS.length} 条，并行 ${JOBS}（每条 = 完整套件子进程），锚点全量校验通过`);
-if (resumed) {
-  console.log(`断点续跑：${resumed} 条已有结论（源码哈希 ${SRC_HASH.slice(0, 12)}，--fresh 可忽略日志重跑）`);
-  console.log(`  剩余 ${SELECTED.length - resumed} 条`);
-}
-console.log(`预计 ${fmtDur((SELECTED.length - resumed) * 18000 / JOBS)}（单条约 18s；实测会随机器波动）\n`);
-
-const startedAt = Date.now();
-let done = 0;
-
-async function runOne(mu, worker) {
-  const { ext, cache } = paths(worker);
-  const t0 = Date.now();
-  const oldHash = sha(mu.old).slice(0, 16);
-  const cached = journal.entries[mu.name];
-  if (cached && cached.oldHash === oldHash) {
-    // Resume: replay the recorded verdict instead of re-running the suites.
-    for (const n of cached.failed) {
-      if (!killedBy.has(n)) killedBy.set(n, []);
-      killedBy.get(n).push(mu.name);
-    }
-    if (cached.crashed) crashedNote.push(`${mu.name}→journal`);
-    if (!cached.failed.length) ineffective.push(mu.name);
-    done++;
-    const elapsed = Date.now() - startedAt;
-    const eta = done ? (elapsed / done) * (SELECTED.length - done) : 0;
-    console.log(`[${String(done).padStart(3)}/${SELECTED.length}]  ↺跳过  ${String(cached.failed.length + " 红").padEnd(8)} ${mu.name}   (ETA ${fmtDur(eta)})`);
-    return;
-  }
-  fs.writeFileSync(ext, src.split(mu.old).join(mu.new));
-  const killed = new Set();
-  let crashed = false;
+  globalThis[Symbol.for("pi.nerdfontUnescape.nfCache")] = new Map([["python", 0xe0a0]]);
+  let mig = "(未跑)";
   try {
-    for (const id of mu.suites) {
-      fs.writeFileSync(cache, auditCacheBaseline);
-      const r = await runSuiteAsync(id, mu.slow === true, ext, cache, worker);
-      r.failed.forEach((n) => killed.add(n));
-      if (r.crashed) { crashed = true; crashedNote.push(`${mu.name}→套件${id}`); }
+    await h["message_start"]?.({}, {});
+    const r = await h["message_end"]({ message: { role: "assistant", content: [{ type: "text", text: "[[nf:python]]" }] } }, ctx);
+    mig = r?.message?.content?.[0]?.text ?? "";
+  } catch (e) {
+    mig = "崩溃: " + String(e);
+  }
+  t("旧Map遗留安全迁移", !mig.startsWith("崩溃") && hasCp(mig, 0xe235) && !hasCp(mig, 0xe0a0), JSON.stringify(mig));
+
+  // 签名失效：篡改同签名缓存生效 → 改签名后必须重新解析
+  const store = globalThis[Symbol.for("pi.nerdfontUnescape.nfCache")];
+  await safeEnd("预热 [[nf:git-branch]]");
+  store.map.set("git-branch", 0xe235); // 投毒（同签名，应被沿用）
+  let p = await safeEnd("投毒 [[nf:git-branch]]");
+  const poisonHonored = hasCp(p, 0xe235);
+  store.sig = "__bogus__"; // 签名失配 → 整体失效 → 重新解析回真值
+  p = await safeEnd("失效 [[nf:git-branch]]");
+  t("签名变化缓存失效", poisonHonored && hasCp(p, 0xe0a0) && !hasCp(p, 0xe235), JSON.stringify(p));
+
+  // null 不跨消息缓存：失败后重试应成功
+  await safeEnd("预热2 [[nf:python]]");
+  // 只投毒 null、不动签名：null 重试是唯一路径（改签名会走失效分支把 null 清掉，
+  // 在带正常签名的环境里曾把变异喂绿——外部评审判例）
+  const st2 = globalThis[Symbol.for("pi.nerdfontUnescape.nfCache")];
+  st2.map.set("python", null);
+  a = await safeEnd("重试 [[nf:python]]");
+  t("失败缓存不永久", !a.includes("[[nf:python]]") && hasCp(a, 0xe235), JSON.stringify(a));
+
+  // 非法语法标记：保留原文 + 可见告警（静默=红线违规）
+  notes.length = 0;
+  const inv = "[[nf:bad name]] 与 [[nf:名称]]";
+  await h["message_start"]?.({}, {});
+  const rInv = await h["message_end"]({ message: { role: "assistant", content: [{ type: "text", text: inv }] } }, ctx);
+  const invOut = rInv?.message?.content?.[0]?.text ?? inv;
+  t("非法标记保留+点名", invOut === inv && notes.some((n) => n.includes("invalid marker syntax") && n.includes("bad name")), JSON.stringify(notes));
+
+  // vscode 走子串（别名反伤判例）
+  const resolved = (x, cp) => !x.startsWith("崩溃:") && !x.includes("[[nf:") && (hasCp(x, cp) || x.includes(`□U+${cp.toString(16).toUpperCase()}`));
+  a = await safeEnd("[[nf:vscode]] 编辑器");
+  t("vscode 子串解析", resolved(a, 0xe8da), JSON.stringify(a));
+  a = await safeEnd("[[nf:node.js]] 运行时");
+  t("node.js 别名可达", resolved(a, 0xf0399), JSON.stringify(a));
+
+  console.log("── ⑯ reload 与批量（第六轮外部评审）");
+  {
+    const SYM = Symbol.for("pi.nerdfontUnescape.nfCache");
+    const SIG = Symbol.for("pi.nerdfontUnescape.cmapSig");
+    await safeEnd("[[nf:python]]");
+    const st = globalThis[SYM];
+    globalThis[SIG] = st.sig; // 模拟 reload：签名仅存全局
+    st.map.set("python", 0xe0a0); // 投毒
+    let o = await safeEnd("[[nf:python]]");
+    const keep = hasCp(o, 0xe0a0) && !hasCp(o, 0xe235);
+    globalThis[SIG] = "__font_changed__"; // 字体集变更
+    o = await safeEnd("[[nf:python]]");
+    t("reload签名保持+变更恢复", keep && hasCp(o, 0xe235) && !hasCp(o, 0xe0a0), JSON.stringify(o));
+  }
+  notes.length = 0;
+  await safeEnd("[[nf:]] 与 [[nf:" + "a".repeat(41) + "]] 与 [[nf:" + "b".repeat(65) + "]]");
+  const n41 = "a".repeat(41), n65 = "b".repeat(65);
+  const warnMsg = notes.find((n) => n.includes("invalid marker syntax")) ?? "";
+  t("空名与超长名告警", warnMsg.includes("[[nf:]]") && warnMsg.includes(n41) && warnMsg.includes(n65), JSON.stringify(notes));
+  {
+    const st = globalThis[Symbol.for("pi.nerdfontUnescape.nfCache")];
+    st.map.delete("python"); st.map.delete("docker"); // 强制走批量路径
+    a = await safeEnd("[[nf:python]] 和 [[nf:docker]] 双名");
+    t("双未缓存名批量解析", !a.startsWith("崩溃:") && (hasCp(a, 0xe235) || a.includes("□U+E235")) && (hasCp(a, 0xf308) || a.includes("□U+F308")), JSON.stringify(a));
+  }
+
+  console.log("── ⑰ 热升级与断言收紧（第七轮外部评审）");
+  if (process.env.SKIP_SLOW) {
+    console.log("  (慢段跳过：SKIP_SLOW)");
+  } else {
+    const SYM2 = Symbol.for("pi.nerdfontUnescape.nfCache");
+    const SIG2 = Symbol.for("pi.nerdfontUnescape.cmapSig");
+    const ASYNC2 = Symbol.for("pi.nerdfontUnescape.cmapAsyncState");
+    await safeEnd("[[nf:python]]");
+    for (let i = 0; i < 200 && (globalThis[ASYNC2]?.checking || globalThis[ASYNC2]?.building); i++) {
+      await new Promise((r) => setTimeout(r, 100));
     }
-  } finally {
-    fs.rmSync(ext, { force: true });
-    fs.rmSync(cache, { force: true });
-  }
-  const names = [...killed];
-  for (const n of names) {
-    if (!killedBy.has(n)) killedBy.set(n, []);
-    killedBy.get(n).push(mu.name);
-  }
-  if (!names.length) ineffective.push(mu.name);
-  journal.entries[mu.name] = { oldHash, failed: names, crashed };
-  saveJournal(); // resumable from here even if this process is killed next second
-  done++;
-  const elapsed = Date.now() - startedAt;
-  const eta = done ? (elapsed / done) * (SELECTED.length - done) : 0;
-  const verdict = names.length ? `${names.length} 红` : crashed ? "套件崩溃" : "0 红 ✗";
-  console.log(
-    `[${String(done).padStart(3)}/${SELECTED.length}] ${fmtDur(Date.now() - t0).padStart(5)}  ${verdict.padEnd(8)} ${mu.name}` +
-    (names.length ? `  ⇒ ${names.join(", ")}` : "") + `   (ETA ${fmtDur(eta)})`,
-  );
-}
-
-// Bounded worker pool: N concurrent mutations, each fully isolated.
-const queue = [...SELECTED];
-await Promise.all(
-  Array.from({ length: Math.min(JOBS, queue.length) }, async (_, w) => {
-    while (queue.length) {
-      const mu = queue.shift();
-      await runOne(mu, w);
+    const realSig = globalThis[SIG2];
+    delete globalThis[SIG2]; // 模拟第五轮版本：有 STORE 无 SIG
+    globalThis[SYM2] = { sig: "round5-sig", map: new Map([["python", null]]) };
+    await h["session_start"]?.({}, ctx); // 热升级路径：应从磁盘恢复签名
+    let recovered = typeof globalThis[SIG2] === "string";
+    for (let i = 0; i < 5 && !recovered; i++) {
+      await new Promise((r) => setTimeout(r, 3000));
+      recovered = typeof globalThis[SIG2] === "string";
     }
-  }),
-);
-
-// 汇总：每个测试名都必须被至少一条变异杀死过（全量盘点，不并发——它自身会写共享缓存）
-const allTests = new Set();
-for (const id of [1, 2]) {
-  const cachePath = path.join(AUDIT_DIR, `cmap-inventory-${process.pid}.json`);
-  fs.writeFileSync(cachePath, auditCacheBaseline);
-  const r = spawnSync("node", [SUITES[id]], {
-    env: { ...process.env, PI_NF_CMAP_CACHE: cachePath }, encoding: "utf8", timeout: 240000,
-  });
-  for (const line of (r.stdout || "").split("\n")) {
-    const m = line.match(/^  [✓✗] (.*)$/);
-    if (m) allTests.add(m[1].split("  ")[0].trim());
+    a = await safeEnd("[[nf:python]]");
+    t("热升级签名迁移", recovered && !a.includes("[[nf:python]]") && !a.startsWith("崩溃:"), `recovered=${recovered}`);
+    globalThis[SIG2] = "brand-new";
+    await safeEnd("[[nf:python]]");
+    const sigAfterFix = globalThis[SYM2].sig;
+    await safeEnd("[[nf:python]]");
+    t("纠正后签名稳定", sigAfterFix === "brand-new" && globalThis[SYM2].sig === "brand-new", `${sigAfterFix}→${globalThis[SYM2].sig}`);
+    globalThis[SIG2] = realSig; // 恢复现场
   }
-  fs.rmSync(cachePath, { force: true });
-}
-const fullRun = SELECTED.length === MUTATIONS.length;
-// Coverage is only meaningful for a complete run: a filtered run cannot kill
-// tests it never exercised (reporting them as decorations would be a lie).
-const uncovered = fullRun ? [...allTests].filter((n) => !killedBy.has(n)) : [];
+  notes.length = 0;
+  await safeEnd("[[nf:" + "c".repeat(121) + "]] 与 [[nf:" + "d".repeat(200) + "]]");
+  {
+    const warn2 = notes.find((n) => n.includes("invalid marker syntax")) ?? "";
+    t("121/200字名告警", warn2.includes("c".repeat(121)) && warn2.includes("d".repeat(200)), JSON.stringify(notes).slice(0, 80));
+  }
 
-console.log(`\n── 审计结论（总耗时 ${fmtDur(Date.now() - startedAt)}）`);
-console.log(
-  fullRun
-    ? `变异总数 ${SELECTED.length}；覆盖测试 ${killedBy.size}/${allTests.size}`
-    : `定向模式：跑 ${SELECTED.length}/${MUTATIONS.length} 条，跳过覆盖判定（全量请去掉 --only/--from）`,
-);
-if (crashedNote.length) console.log(`套件崩溃（非断言式失败）: ${crashedNote.join(", ")}`);
-if (ineffective.length) console.log(`✗ 无效变异: ${ineffective.join(", ")}`);
-if (uncovered.length) console.log(`✗ 从未变红（装饰品嫌疑）: ${uncovered.join(", ")}`);
-if (!ineffective.length && !uncovered.length && fullRun) console.log("✓ 全部测试都被证明会红，全部变异都杀死了测试");
-if (fullRun && !anchorErrors.length && !ineffective.length && !uncovered.length) {
-  fs.rmSync(JOURNAL, { force: true }); // complete green run: nothing to resume
-} else {
-  console.log(`续跑日志: ${JOURNAL}` + (fullRun ? "" : "（定向模式保留，便于多次 --only 累积）"));
-}
-fs.rmSync(warmCache, { force: true });
-fs.rmSync(AUDIT_DIR, { recursive: true, force: true });
-})().catch((e) => { console.error(e); process.exit(1); });
+  console.log("── ⑱ 磁盘迁移与真实核验（第八轮）");
+  if (process.env.SKIP_SLOW) {
+    console.log("  (慢段跳过：SKIP_SLOW)");
+  } else {
+    {
+    const CSTK = Symbol.for("pi.nerdfontUnescape.cmap");
+    const SIGK = Symbol.for("pi.nerdfontUnescape.cmapSig");
+    const ASYNCK = Symbol.for("pi.nerdfontUnescape.cmapAsyncState");
+    const P = process.env.PI_NF_CMAP_CACHE;
+    const orig = fs.existsSync(P) ? fs.readFileSync(P, "utf8") : null;
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const realError = console.error;
+    try {
+      fs.writeFileSync(P, JSON.stringify({ schema: 2, fonts: 1, ranges: [null], sig: "fake" })); // syntactically valid JSON, structurally corrupt ranges
+      delete globalThis[CSTK]; delete globalThis[SIGK];
+      globalThis[ASYNCK] = { checking: false, building: false };
+      const buildLogs = [];
+      console.error = (...args) => { buildLogs.push(args.map(String).join(" ")); };
+      await h["session_start"]?.({}, ctx);
+      const rejected = globalThis[CSTK] === undefined;
+      await h["session_start"]?.({}, ctx);
+      await h["session_start"]?.({}, ctx);
+      let ok = false, buildFailed = false;
+      for (let i = 0; i < 40 && !ok && !buildFailed; i++) {
+        ok = typeof globalThis[SIGK] === "string";
+        buildFailed = notes.some((n) => n.includes("cmap 不可用"));
+        if (!ok && !buildFailed) await wait(3000);
+      }
+      if (ok) await wait(3000); // Let concurrently started mutant builds finish logging.
+      console.error = realError;
+      const builds = buildLogs.filter((s) => s.includes("cmap cache:")).length;
+      t("损坏磁盘缓存拒收并重建", rejected && ok, `rejected=${rejected}, sig=${typeof globalThis[SIGK]}`);
+      {
+        // The rebuild above is a real build, so the on-disk metadata is
+        // mutation-reachable (source label, fixture union).
+        const meta = JSON.parse(fs.readFileSync(P, "utf8"));
+        const hasAlt = (meta.ranges || []).some(([lo, hi]) => lo <= 0xe777 && 0xe777 <= hi);
+        t("重建缓存记录字体链来源", meta.schema === 2 && meta.source === "explicit" && meta.fonts >= 2 && hasAlt, JSON.stringify(meta).slice(0, 160));
+      }
+      t("并发重建去重", builds === 1, `builds=${builds}`);
+      globalThis[SIGK] = "__tampered__"; // 篡改 → reload 必须靠真实字体签名核验纠正
+      let fixed = false;
+      for (let i = 0; i < 40 && !fixed; i++) {
+        await h["session_start"]?.({}, ctx);
+        await wait(3000);
+        fixed = typeof globalThis[SIGK] === "string" && globalThis[SIGK] !== "__tampered__";
+      }
+      t("reload真实签名核验", fixed, `sig=${String(globalThis[SIGK]).slice(0, 10)}`);
+      notes.length = 0;
+      const savedPath = process.env.PATH;
+      try {
+        process.env.PATH = "";
+        await h["session_start"]?.({}, ctx);
+        for (let i = 0; i < 20 && !notes.some((n) => n.includes("font signature check failed")); i++) await wait(100);
+      } finally {
+        process.env.PATH = savedPath;
+      }
+      t("签名核验失败留痕", notes.some((n) => n.includes("font signature check failed") && n.includes("[warning]")), JSON.stringify(notes));
+    } finally {
+      // Restore console.error even when the rebuild or assertion setup throws.
+      if (typeof realError === "function") console.error = realError;
+      // When orig is fake/legacy, do not restore it; deleting lets the next
+      // session rebuild truth instead of racing an async build back to poison.
+      // 防止异步构建竞态把 fake 留在盘上毒害后续运行（第八轮判例）
+      const origValid = orig !== null &&/"sig"/.test(orig);
+      if (origValid) fs.writeFileSync(P, orig);
+      else { try { fs.unlinkSync(P); } catch {} }
+    }
+  }
+  }
+
+  console.log("── ⑲ 自评加固");
+  {
+    const rp = await h["before_agent_start"]?.({}, ctx);
+    t("缺systemPrompt不产生undefined", typeof rp?.systemPrompt === "string" && !rp.systemPrompt.startsWith("undefined") && rp.systemPrompt.includes("nerdfont-unescape output protocol"), JSON.stringify(rp?.systemPrompt?.slice(0, 24)));
+  }
+
+  console.log("── ⑳ 自评十四轮");
+  {
+    let ir2 = "(异常)";
+    try { ir2 = await h["input"]({ type: "input", text: undefined, source: "interactive" }, ctx); } catch (e) { ir2 = "异常: " + e.message; }
+    t("input非字符串不阻断", typeof ir2 === "object" && ir2.action === "continue", JSON.stringify(String(ir2)));
+  }
+  {
+    // 奇数反引号前的反斜杠语义冻结：\\\ue235（3bs+文本）→ 前导 \ 原样 + 后对字面化 = \\ue235（2bs+文本）
+    const odd = "\\\\" + "\\u" + "e235";
+    a = await end("奇 " + odd + " 数");
+    t("三反斜杠确定性处理", a.includes("\\\\ue235") && !a.includes("\\\\\\ue235") && !hasCp(a, 0xe235), JSON.stringify(a));
+  }
+
+  console.log("── ㉔ 降级措辞（查不了 ≠ 不存在）");
+  {
+    // python3 unreachable: the marker cannot be checked, which is NOT the same
+    // as the name not existing. Claiming "no such name" here is a lie (round 18).
+    const savedPath = process.env.PATH;
+    notes.length = 0;
+    let out24 = "(异常)";
+    try {
+      process.env.PATH = "";
+      out24 = await end("x [[nf:python]] y");
+    } finally {
+      process.env.PATH = savedPath;
+    }
+    const w = notes.find((n) => n.includes("nerdfont-unescape:")) ?? "";
+    t(
+      "resolver不可用不谎报未知名",
+      out24.includes("[[nf:python]]") && w.includes("could not be resolved") && !w.includes("no such name"),
+      w.slice(0, 130),
+    );
+  }
+
+  console.log("── ㉓ 内置 BMP 分配表不变量");
+  {
+    // The table decides "is this BMP codepoint assigned?" — a bad regeneration
+    // would mark real characters as invisible and substitute them with □ (a
+    // visible but WRONG result). Verify structure, then cross-check against the
+    // local Python's unicodedata when it is at least as new as the table.
+    const srcPath = process.env.EXT_PATH || path.join(__dirname, "..", "nerdfont-unescape.ts");
+    const raw = /const ASSIGNED_BMP_RAW = "([^"]+)"/.exec(fs.readFileSync(srcPath, "utf8"))?.[1] ?? "";
+    const ranges = raw.split(",").filter(Boolean).map((x) => {
+      const [a, b] = x.split("-");
+      return [parseInt(a, 16), parseInt(b ?? a, 16)];
+    });
+    const sorted = ranges.every(([a, b], i) => a <= b && (i === 0 || a > ranges[i - 1][1]));
+    const inBmp = ranges.every(([a, b]) => a >= 0 && b <= 0xffff);
+    const noSurrogates = !ranges.some(([a, b]) => b >= 0xd800 && a <= 0xdfff);
+    t("分配表结构合法（有序/不重叠/BMP内/排除代理区）", ranges.length > 300 && sorted && inBmp && noSurrogates, `n=${ranges.length}`);
+    const has = (cp) => ranges.some(([a, b]) => cp >= a && cp <= b);
+    t("分配表抽样正确（A/中文/韩文不在表中=未分配区）", has(0x41) && has(0x4e00) && has(0xac00) && !has(0x0378) && !has(0xe0000), "");
+    const py = spawnSync("python3", ["-c", `
+import sys, unicodedata
+if tuple(int(x) for x in unicodedata.unidata_version.split(".")) < (16, 0):
+    print("SKIP", unicodedata.unidata_version); raise SystemExit
+raw = sys.stdin.read().strip()
+rs = []
+for part in raw.split(","):
+    a, _, b = part.partition("-")
+    rs.append((int(a, 16), int(b or a, 16)))
+def has(cp):
+    lo, hi = 0, len(rs) - 1
+    while lo <= hi:
+        m = (lo + hi) // 2
+        x, y = rs[m]
+        if cp < x: hi = m - 1
+        elif cp > y: lo = m + 1
+        else: return True
+    return False
+bad = [cp for cp in range(0x10000)
+       if not (0xd800 <= cp <= 0xdfff) and has(cp) != (unicodedata.category(chr(cp)) != "Cn")]
+print("MISMATCH", len(bad), ["%04X" % c for c in bad[:8]] if bad else "OK")
+`], { input: raw, encoding: "utf8" });
+    const out = String(py.stdout || "").trim();
+    if (out.startsWith("SKIP")) {
+      console.log(`  (Unicode 交叉校验跳过：本地 unicodedata ${out.slice(5)} < 16.0)`);
+    } else {
+      t("分配表与本地 Unicode 一致", /OK$/.test(out), out.slice(0, 120));
+    }
+  }
+
+  console.log("── ㉒ 重复处理幂等（双重注册 / reload 残留）");
+  {
+    // The hatch form `\\ue235` displays as a single-backslash literal; feeding
+    // that output back through the pipeline used to restore it into a glyph and
+    // corrupt the deliberate literal (round 17).
+    const bs = "\\";
+    const first = await end("字面 " + bs + bs + "ue235 与真 " + bs + "u" + "e0b0");
+    const second = await end(first);
+    const third = await end(second);
+    t("二次处理不腐蚀字面量", second === first && third === first, JSON.stringify(second));
+    t("首轮仍正常还原", hasCp(first, 0xe0b0) && first.includes(bs + "ue235"), JSON.stringify(first));
+  }
+
+  console.log("── ㉑ CRLF 文本（Windows/剪贴板粘贴）");
+  {
+    const esc = (h) => "\\" + "u" + h; // build escapes by concatenation: dodges JS literal escapes
+    const crlf = "前 " + esc("e235") + "\r\n```\r\n-- U+E235\r\n```\r\n后 " + esc("e0b0");
+    a = await end(crlf);
+    // fence body stays literal text "-- U+E235"; the escape AFTER the fence must restore
+    t("CRLF围栏闭合被识别", hasCp(a, 0xe0b0) && a.includes("-- U+E235"), JSON.stringify(a.slice(0, 70)));
+  }
+  {
+    a = await end("\u56fe\u6807\r\n-- U+E235\r\n\u5c3e x");
+    t("CRLF下行内补框", a.includes("-- U+E235 \u25a1\r\n") && !a.includes("\r \u25a1"), JSON.stringify(a));
+  }
+
+  console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
+  process.exit(fail ? 1 : 0);
+})().catch((e) => { console.error("套件崩溃:", e); process.exit(1); });

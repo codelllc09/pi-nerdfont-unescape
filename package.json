@@ -32,10 +32,11 @@
 		]
 	},
 	"scripts": {
-		"test": "scripts/safe-run.sh node tests/test-nerdfont-unescape.cjs && scripts/safe-run.sh node tests/test-tools.cjs && python3 -m py_compile tests/vision-verify.py && echo 'py_compile ✓'",
-		"test:audit": "scripts/safe-run.sh node tests/mutation-audit.cjs",
+		"test": "node tests/guard-layout.cjs && scripts/safe-run.sh node tests/test-nerdfont-unescape.cjs && scripts/safe-run.sh node tests/test-tools.cjs && python3 -m py_compile tests/vision-verify.py && echo 'py_compile ✓'",
+		"test:audit": "node tests/guard-layout.cjs && scripts/safe-run.sh node tests/mutation-audit.cjs",
 		"test:audit:light": "scripts/safe-run.sh node tests/mutation-audit.cjs --jobs 1",
-		"test:raw": "node tests/test-nerdfont-unescape.cjs && node tests/test-tools.cjs"
+		"test:raw": "node tests/test-nerdfont-unescape.cjs && node tests/test-tools.cjs",
+		"guard": "node tests/guard-layout.cjs"
 	},
 	"files": [
 		"nerdfont-unescape.ts",

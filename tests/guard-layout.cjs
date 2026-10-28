@@ -1,0 +1,50 @@
+#!/usr/bin/env node
+/**
+ * guard-layout.cjs — 结构守卫：确认每个测试文件"是它自己"。
+ *
+ * 判例（2026-10-29）：一次脚本化编辑把变异审计的内容整体写进了回归套件，
+ * 于是 `npm test` 实际在跑审计，而且递归 spawn 自己——表现为"零输出卡死"
+ * 和异常内存占用，排查了很久。这类事故的特征是文件身份错乱，所以这里用
+ * 各自独有/绝不共有的标记做双向断言：既查"该有的在"，也查"不该有的不在"。
+ *
+ * 运行: node tests/guard-layout.cjs   （毫秒级，无子进程，无网络）
+ */
+const fs = require("fs");
+const path = require("path");
+
+// GUARD_DIR exists so this guard can be tested against a deliberately
+// mismatched copy (a guard that cannot fail is decoration).
+const DIR = process.env.GUARD_DIR || __dirname;
+const T = (p) => fs.readFileSync(path.join(DIR, p), "utf8");
+let fail = 0;
+const check = (name, ok, detail = "") => {
+  console.log(`  ${ok ? "✓" : "✗"} ${name}${ok ? "" : "  " + detail}`);
+  if (!ok) fail++;
+};
+
+const suite = T("test-nerdfont-unescape.cjs");
+const tools = T("test-tools.cjs");
+const audit = T("mutation-audit.cjs");
+const review = T("gen-review.cjs");
+
+// 1) 身份标记：每个文件都有自己独有的头部与结构
+check("套件是回归套件", suite.includes("test-nerdfont-unescape.cjs — ") && suite.includes("const t = (name"), "缺套件头部或 t()");
+check("套件不包含审计驱动", !suite.includes("const MUTATIONS") && !suite.includes("runSuiteAsync"), "套件里出现了审计代码");
+check("审计是变异审计", audit.includes("mutation-audit.cjs — ") && audit.includes("const MUTATIONS"), "缺审计头部或 MUTATIONS");
+check("审计不包含回归套件", !audit.includes("const t = (name"), "审计里出现了套件代码");
+check("工具套件是它自己", tools.includes("test-tools.cjs — ") && tools.includes("const t = (name"), "缺工具套件头部");
+check("审查页生成器是它自己", review.includes("gen-review.cjs") && review.includes("const CASES"), "缺 gen-review 结构");
+
+// 2) 互不相同的关切点必须各在一处（防止"复制粘贴式孪生"）
+check("MUTATIONS 仅存在于审计", (suite.match(/const MUTATIONS/g) || []).length === 0);
+check("t() 断言器存在于两个套件", [suite, tools].every((s) => s.includes("const t = (name")));
+
+// 3) 每份测试文件恰好一个 shebang 且在首行
+for (const [name, text] of Object.entries({ suite, tools, audit, review })) {
+  const lines = text.split("\n");
+  const shebangs = lines.filter((l) => l.startsWith("#!")).length;
+  check(`${name}: 单个 shebang 且在首行`, shebangs === 1 && lines[0].startsWith("#!"), `shebangs=${shebangs}`);
+}
+
+console.log(fail ? `\n✗ 结构守卫失败 ${fail} 项` : "\n✓ 结构守卫通过（文件身份与结构完整）");
+process.exit(fail ? 1 : 0);
