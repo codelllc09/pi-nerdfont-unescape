@@ -1082,6 +1082,9 @@ Markers and escapes inside code spans or fences are never touched.`
   // (the model never receives them). Auto-replace with \uXXXX escapes (protocol-native, model-readable) and tell the user.
   pi.on("input", async (event, ctx) => {
     let text = event.text;
+    // Defensive: a non-string payload must never block the user's input
+    // (self-review round 14 — used to throw "text is not iterable")
+    if (typeof text !== "string") return { action: "continue" };
     const escaped: number[] = [];
     let out = "";
     for (const ch of text) {

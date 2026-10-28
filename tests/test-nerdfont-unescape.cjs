@@ -379,6 +379,19 @@ const t = (name, ok, detail = "") => {
     t("缺systemPrompt不产生undefined", typeof rp?.systemPrompt === "string" && !rp.systemPrompt.startsWith("undefined") && rp.systemPrompt.includes("nerdfont-unescape output protocol"), JSON.stringify(rp?.systemPrompt?.slice(0, 24)));
   }
 
+  console.log("── ⑳ 自评十四轮");
+  {
+    let ir2 = "(异常)";
+    try { ir2 = await h["input"]({ type: "input", text: undefined, source: "interactive" }, ctx); } catch (e) { ir2 = "异常: " + e.message; }
+    t("input非字符串不阻断", typeof ir2 === "object" && ir2.action === "continue", JSON.stringify(String(ir2)));
+  }
+  {
+    // 奇数反引号前的反斜杠语义冻结：\\\ue235（3bs+文本）→ 前导 \ 原样 + 后对字面化 = \\ue235（2bs+文本）
+    const odd = "\\\\" + "\\u" + "e235";
+    a = await end("奇 " + odd + " 数");
+    t("三反斜杠确定性处理", a.includes("\\\\ue235") && !a.includes("\\\\\\ue235") && !hasCp(a, 0xe235), JSON.stringify(a));
+  }
+
   console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error("套件崩溃:", e); process.exit(1); });

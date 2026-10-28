@@ -14,7 +14,14 @@ const os = require("os");
 const path = require("path");
 
 function piRoot() {
-  if (process.env.PI_CODING_AGENT_DIR) return process.env.PI_CODING_AGENT_DIR;
+  if (process.env.PI_CODING_AGENT_DIR) {
+    const p = process.env.PI_CODING_AGENT_DIR;
+    const fs2 = require("fs");
+    if (!fs2.existsSync(require("path").join(p, "dist/index.js"))) {
+      throw new Error(`PI_CODING_AGENT_DIR (${p}) has no dist/index.js — wrong path?`);
+    }
+    return p;
+  }
   const base = path.join(os.homedir(), ".local/share/pi-node");
   const candidates = [path.join(base, "current/lib/node_modules/@earendil-works/pi-coding-agent")];
   if (fs.existsSync(base)) {
