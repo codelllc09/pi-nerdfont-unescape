@@ -9,7 +9,17 @@
  */
 const { jitiLoad, extPath } = require("./lib.cjs");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
+
+// Review generation exercises cache migration, so it must use an isolated
+// cache rather than the user's production file.
+let ownedCacheDir = null;
+if (!process.env.PI_NF_CMAP_CACHE) {
+  ownedCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-nf-review-"));
+  process.env.PI_NF_CMAP_CACHE = path.join(ownedCacheDir, "cmap.json");
+  process.on("exit", () => fs.rmSync(ownedCacheDir, { recursive: true, force: true }));
+}
 
 const mod = jitiLoad();
 void extPath;
@@ -172,9 +182,23 @@ const CASES = [
   { sec: "⑯ reload 与批量", name: "reload签名保持+变更恢复", kind: "nf", in: "签名仅存全局（reload 模拟）",
     expect: "同签名投毒沿用；签名变更后投毒被纠正（cmapSig 全局化）", mut: "M41 M45" },
   { sec: "⑯ reload 与批量", name: "空名与超长名告警", kind: "nf", in: "[[nf:]] 41字 65字",
-    expect: "空名/超长名都进语法告警（宽松扫描 0-120 + 同规则校验）", mut: "M46 M47" },
+    expect: "空名/超长名都进语法告警（外壳匹配不限长 + 同规则校验）", mut: "M46 M47" },
   { sec: "⑯ reload 与批量", name: "双未缓存名批量解析", kind: "nf", in: "[[nf:python]] 和 [[nf:docker]]",
     expect: "一次批量调用解析全部未缓存名", mut: "M48" },
+  { sec: "⑰⑱ 迁移与核验", name: "热升级签名迁移", kind: "nf", in: "有 STORE 无 SIG（第五轮现场）",
+    expect: "有共享 cmap 但无全局签名时，从有效磁盘缓存恢复签名", mut: "M50" },
+  { sec: "⑰⑱ 迁移与核验", name: "纠正后签名稳定", kind: "nf", in: "变更→纠正→再解析",
+    expect: "store.sig 写回比对基准，后续消息不再重复清缓存", mut: "M49" },
+  { sec: "⑰⑱ 迁移与核验", name: "121/200字名告警", kind: "nf", in: "121 字与 200 字名",
+    expect: "超长名同样点名（LOOSE 不限长）", mut: "M47" },
+  { sec: "⑱ 磁盘迁移与真实核验", name: "旧格式缓存拒收并重建", kind: "nf", in: "磁盘缓存只有 ranges、没有 sig",
+    expect: "旧格式不载入共享 cmap，并在后台重建带签名的新缓存", mut: "M52 M53" },
+  { sec: "⑱ 磁盘迁移与真实核验", name: "并发重建去重", kind: "nf", in: "连续三次 session_start",
+    expect: "只有一次 cmap 构建完成记录，不发生扫描风暴", mut: "M54" },
+  { sec: "⑱ 磁盘迁移与真实核验", name: "reload真实签名核验", kind: "nf", in: "篡改全局签名后 reload",
+    expect: "主动计算真实字体签名并重建，签名恢复为真值", mut: "M51" },
+  { sec: "⑱ 磁盘迁移与真实核验", name: "签名核验失败留痕", kind: "nf", in: "临时令 python3 不可达",
+    expect: "warning 明确说明签名核验失败，不静默降级", mut: "M55" },
   { sec: "⑬ Markdown 边角", name: "波浪围栏保护", kind: "end", in: "前 \\ue235\n~~~\nx = \"\\ue0b0\"\n~~~\n后 \\uf308",
     expect: "~~~ 围栏与 ``` 同等保护", mut: "M7" },
   { sec: "⑬ Markdown 边角", name: "带语言标注围栏", kind: "end", in: "```js\nicon = \"\\ue718\"\n```\n外 \\ue0a0",
@@ -189,6 +213,9 @@ const CASES = [
 
 (async () => {
   await handlers["session_start"]?.({}, {});
+  for (let i = 0; i < 40 && !globalThis[Symbol.for("pi.nerdfontUnescape.cmap")]; i++) {
+    await new Promise((r) => setTimeout(r, 3000));
+  }
   const rows = [];
   let curSec = "";
   for (const c of CASES) {
@@ -259,6 +286,95 @@ const CASES = [
           const retried = await end("[[nf:python]]");
           actual = `null 后重试: ${dec(retried)}\n(解析=${!retried.includes("[[nf:python]]")})`;
         }
+        else if (c.name === "热升级签名迁移") {
+          const SIGK = Symbol.for("pi.nerdfontUnescape.cmapSig");
+          const ASYNCK = Symbol.for("pi.nerdfontUnescape.cmapAsyncState");
+          for (let i = 0; i < 200 && (globalThis[ASYNCK]?.checking || globalThis[ASYNCK]?.building); i++) {
+            await new Promise((r) => setTimeout(r, 100));
+          }
+          const saved = globalThis[SIGK];
+          delete globalThis[SIGK];
+          globalThis[Symbol.for("pi.nerdfontUnescape.nfCache")] = { sig: "round5-sig", map: new Map([["python", null]]) };
+          await handlers["session_start"]?.({}, ctx);
+          let rec = typeof globalThis[SIGK] === "string";
+          for (let i = 0; i < 5 && !rec; i++) { await new Promise((r) => setTimeout(r, 3000)); rec = typeof globalThis[SIGK] === "string"; }
+          const out9 = await end("[[nf:python]]");
+          globalThis[SIGK] = saved;
+          src = null;
+          actual = `签名恢复: ${rec ? "OK" : "FAIL"}\n解析: ${dec(out9)}`;
+        }
+        else if (c.name === "纠正后签名稳定") {
+          const SIGK = Symbol.for("pi.nerdfontUnescape.cmapSig");
+          const saved = globalThis[SIGK];
+          await end("[[nf:python]]");
+          globalThis[SIGK] = "__v8__";
+          await end("[[nf:python]]");
+          const s1 = globalThis[Symbol.for("pi.nerdfontUnescape.nfCache")].sig;
+          await end("[[nf:python]]");
+          const s2 = globalThis[Symbol.for("pi.nerdfontUnescape.nfCache")].sig;
+          globalThis[SIGK] = saved;
+          src = null;
+          actual = `纠正后: ${s1} → 下条: ${s2}\n(稳定=${s1 === s2 && s1 === "__v8__"})`;
+        }
+        else if (c.name === "121/200字名告警") {
+          notes.length = 0;
+          src = "[[nf:" + "c".repeat(121) + "]] 与 [[nf:" + "d".repeat(200) + "]]";
+          const out9 = await end(src);
+          void out9;
+          src = null;
+          const warning = notes.find((n) => n.includes("语法不合法")) ?? "";
+          actual = `121字点名=${warning.includes("c".repeat(121))}\n200字点名=${warning.includes("d".repeat(200))}`;
+        }
+        else if (c.name === "旧格式缓存拒收并重建" || c.name === "并发重建去重") {
+          const CSTK = Symbol.for("pi.nerdfontUnescape.cmap");
+          const SIGK = Symbol.for("pi.nerdfontUnescape.cmapSig");
+          const ASYNCK = Symbol.for("pi.nerdfontUnescape.cmapAsyncState");
+          const cachePath = process.env.PI_NF_CMAP_CACHE;
+          fs.writeFileSync(cachePath, JSON.stringify({ fonts: ["fake"], ranges: [[57344, 57344]] }));
+          delete globalThis[CSTK]; delete globalThis[SIGK];
+          globalThis[ASYNCK] = { checking: false, building: false };
+          const logs = [];
+          const realError = console.error;
+          console.error = (...args) => { logs.push(args.map(String).join(" ")); };
+          try {
+            await handlers["session_start"]?.({}, ctx);
+            const rejected = globalThis[CSTK] === undefined;
+            await handlers["session_start"]?.({}, ctx);
+            await handlers["session_start"]?.({}, ctx);
+            for (let i = 0; i < 40 && typeof globalThis[SIGK] !== "string"; i++) await new Promise((r) => setTimeout(r, 3000));
+            await new Promise((r) => setTimeout(r, 3000));
+            const builds = logs.filter((s) => s.includes("cmap cache:")).length;
+            actual = c.name === "旧格式缓存拒收并重建"
+              ? `旧格式拒收=${rejected}\n签名重建=${typeof globalThis[SIGK] === "string"}`
+              : `构建完成次数=${builds}\n(去重=${builds === 1})`;
+          } finally {
+            console.error = realError;
+          }
+          src = null;
+        }
+        else if (c.name === "reload真实签名核验") {
+          const SIGK = Symbol.for("pi.nerdfontUnescape.cmapSig");
+          globalThis[SIGK] = "__review_tampered__";
+          for (let i = 0; i < 40 && globalThis[SIGK] === "__review_tampered__"; i++) {
+            await handlers["session_start"]?.({}, ctx);
+            await new Promise((r) => setTimeout(r, 3000));
+          }
+          actual = `签名已恢复=${typeof globalThis[SIGK] === "string" && globalThis[SIGK] !== "__review_tampered__"}`;
+          src = null;
+        }
+        else if (c.name === "签名核验失败留痕") {
+          notes.length = 0;
+          const savedPath = process.env.PATH;
+          try {
+            process.env.PATH = "";
+            await handlers["session_start"]?.({}, ctx);
+            for (let i = 0; i < 20 && !notes.some((n) => n.includes("字体签名核验失败")); i++) await new Promise((r) => setTimeout(r, 100));
+          } finally {
+            process.env.PATH = savedPath;
+          }
+          actual = notes.find((n) => n.includes("字体签名核验失败")) ?? "(无告警)";
+          src = null;
+        }
         else if (c.in.includes("```")) src = "```\n[[nf:python]]\n```";
         notes.length = 0;
         if (src !== null) {
@@ -325,7 +441,7 @@ ${rows.join("\n")}
 </table></body></html>`;
   // ── 字体子集内嵌：浏览器（尤其沙箱）未必能用系统 Nerd Font，这里把
   //    页面实际用到的图标字形子集成 woff2 base64 塞进 @font-face，百分百离线可渲染
-  const NF_SRC = process.env.PI_NF_FONT || path.join(require("os").homedir(), ".local/share/fonts/NFM.ttf"); // Symbols Nerd Font Mono（PI_NF_FONT 可覆盖）
+  const NF_SRC = process.env.PI_NF_FONT || path.join(os.homedir(), ".local/share/fonts/NFM.ttf"); // Symbols Nerd Font Mono（PI_NF_FONT 可覆盖）
   const cps = [...seenCps].sort((a, b) => a - b);
   const uni = cps.map((c) => c.toString(16)).join(",") || "e235";
   const woff2 = require("child_process").spawnSync(
@@ -340,6 +456,7 @@ sys.argv=args; ss(); print(base64.b64encode(open("/tmp/nf-subset.woff2","rb").re
     ? `@font-face{font-family:"NFIcons";src:url(data:font/woff2;base64,${b64}) format("woff2");font-display:block}`
     : "";
   const html2 = html.replace("/*FONTCSS*/", fontCss);
-  fs.writeFileSync(path.join(__dirname, "..", "review.html"), html2);
-  console.log(`review.html 生成完毕（${CASES.length} 用例，内嵌 ${cps.length} 个图标字形子集 ${cps.map((c) => "U+" + c.toString(16).toUpperCase()).join(" ")}）`);
+  const reviewOut = process.env.PI_NF_REVIEW_OUT || path.join(__dirname, "..", "review.html");
+  fs.writeFileSync(reviewOut, html2);
+  console.log(`${path.basename(reviewOut)} 生成完毕（${CASES.length} 用例，内嵌 ${cps.length} 个图标字形子集 ${cps.map((c) => "U+" + c.toString(16).toUpperCase()).join(" ")}）`);
 })();

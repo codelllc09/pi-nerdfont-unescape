@@ -12,11 +12,14 @@
  */
 const { spawnSync } = require("child_process");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 
 const ROOT = __dirname + "/..";
 const SRC = path.join(ROOT, "nerdfont-unescape.ts");
 const MUTATED = "/tmp/pi-mutated-ext.ts";
+const AUDIT_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "pi-nf-audit-"));
+const AUDIT_CACHE = path.join(AUDIT_DIR, "cmap.json");
 const SUITES = {
   1: path.join(ROOT, "tests/test-nerdfont-unescape.cjs"),
   2: path.join(ROOT, "tests/test-tools.cjs"),
@@ -142,12 +145,27 @@ const MUTATIONS = [
   { name: "M48 批量截断为首名", suites: [1],
     old: '`resolve:${uncached.join(",")}`',
     new: '`resolve:${uncached[0]}`' },
-  { name: "M49 签名写回错误基准", suites: [1],
+  { name: "M49 签名写回错误基准", suites: [1], slow: true,
     old: "store.sig = curSig; // 写回比对基准（曾误写模块局部 cmapSig → 每条消息重复清缓存）",
     new: "store.sig = cmapSig;" },
-  { name: "M50 热升级恢复旁路", suites: [1],
-    old: "if (typeof g[CMAP_SIG] !== \"string\") {",
-    new: "if (false) {" },
+  { name: "M50 热升级恢复旁路", suites: [1], slow: true,
+    old: "if (typeof g[CMAP_SIG] !== \"string\") {\n      if (!loadCmapCache()) {\n        buildCmapCache(notify);\n        return;\n      }\n    }\n    checkCmapSignature(notify);",
+    new: "if (false) { void g; }\n    void notify;" },
+  { name: "M51 reload核验旁路", suites: [1], slow: true, count: 2,
+    old: "checkCmapSignature(notify);",
+    new: "void notify;" },
+  { name: "M52 旧格式宽容退回", suites: [1], slow: true,
+    old: "if (!Array.isArray(data.ranges) || typeof data.sig !== \"string\") return false;",
+    new: "if (!Array.isArray(data.ranges)) return false;" },
+  { name: "M53 模板转义腐坏退回", suites: [1], slow: true,
+    old: 'try: h.update(("%s:%d\\\\n" % (p, os.path.getmtime(p))).encode())',
+    new: 'try: h.update(("%s:%d\\n" % (p, os.path.getmtime(p))).encode())' },
+  { name: "M54 并发重建去重旁路", suites: [1], slow: true,
+    old: "if (state.building) return;",
+    new: "if (false) return;" },
+  { name: "M55 签名核验失败静默", suites: [1], slow: true,
+    old: "console.error(`[nerdfont-unescape] cmap signature check FAILED: ${reason}`);\n        notify?.(msg, \"warning\");",
+    new: "console.error(`[nerdfont-unescape] cmap signature check FAILED: ${reason}`);" },
   { name: "M42 失败缓存永久化", suites: [1],
     old: "const uncached = [...wanted].filter((n) => cache.get(n) == null);",
     new: "const uncached = [...wanted].filter((n) => !cache.has(n));" },
@@ -164,10 +182,10 @@ const MUTATIONS = [
 
 const src = fs.readFileSync(SRC, "utf8");
 
-function runSuite(id) {
+function runSuite(id, full, extensionPath = MUTATED) {
   const r = spawnSync("node", [SUITES[id]], {
-    env: { ...process.env, EXT_PATH: MUTATED },
-    encoding: "utf8", timeout: 120000,
+    env: { ...process.env, EXT_PATH: extensionPath, PI_NF_CMAP_CACHE: AUDIT_CACHE, ...(full ? {} : { SKIP_SLOW: "1" }) },
+    encoding: "utf8", timeout: 240000,
   });
   const out = r.stdout || "";
   const failed = [];
@@ -178,6 +196,15 @@ function runSuite(id) {
   const crashed = r.status !== 0 && failed.length === 0;
   return { failed, crashed, tail: out.split("\n").filter(Boolean).slice(-2).join(" | ") };
 }
+
+// Build one isolated, valid baseline before mutation runs. Every child receives
+// a fresh copy so a killed or crashing mutant cannot poison the next mutation.
+const warm = runSuite(1, false, SRC);
+if (warm.crashed || warm.failed.length || !fs.existsSync(AUDIT_CACHE)) {
+  console.error(`✗ 隔离 cmap 基线构建失败：${warm.tail || warm.failed.join(", ")}`);
+  process.exit(1);
+}
+const auditCacheBaseline = fs.readFileSync(AUDIT_CACHE);
 
 const killedBy = new Map(); // test name -> [mutation names]
 const ineffective = [];
@@ -194,7 +221,8 @@ for (const mu of MUTATIONS) {
   const killed = new Set();
   let crashed = false;
   for (const id of mu.suites) {
-    const r = runSuite(id);
+    fs.writeFileSync(AUDIT_CACHE, auditCacheBaseline);
+    const r = runSuite(id, mu.slow === true); // slow 变异才需要慢测试（真实字体扫描）
     r.failed.forEach((n) => killed.add(n));
     if (r.crashed) { crashed = true; crashedNote.push(`${mu.name}→套件${id}`); }
   }
@@ -211,7 +239,10 @@ for (const mu of MUTATIONS) {
 const allTests = new Set();
 for (const id of [1, 2]) {
   fs.rmSync(MUTATED, { force: true });
-  const r = spawnSync("node", [SUITES[id]], { encoding: "utf8", timeout: 120000 });
+  fs.writeFileSync(AUDIT_CACHE, auditCacheBaseline);
+  const r = spawnSync("node", [SUITES[id]], {
+    env: { ...process.env, PI_NF_CMAP_CACHE: AUDIT_CACHE }, encoding: "utf8", timeout: 240000,
+  }); // 盘点全量
   for (const line of (r.stdout || "").split("\n")) {
     const m = line.match(/^  [✓✗] (.*)$/);
     if (m) allTests.add(m[1].split("  ")[0].trim());
@@ -226,4 +257,5 @@ if (ineffective.length) console.log(`✗ 无效变异: ${ineffective.join(", ")}
 if (uncovered.length) console.log(`✗ 从未变红（装饰品嫌疑）: ${uncovered.join(", ")}`);
 if (!ineffective.length && !uncovered.length) console.log("✓ 全部测试都被证明会红，全部变异都杀死了测试");
 fs.rmSync(MUTATED, { force: true });
+fs.rmSync(AUDIT_DIR, { recursive: true, force: true });
 process.exit(ineffective.length || uncovered.length ? 1 : 0);

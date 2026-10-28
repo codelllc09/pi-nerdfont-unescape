@@ -76,13 +76,15 @@ function isInherentlyInvisible(cp: number): boolean {
 import * as os from "node:os";
 
 const CMAP_CACHE =
-  process.platform === "win32"
+  process.env.PI_NF_CMAP_CACHE ??
+  (process.platform === "win32"
     ? `${process.env.LOCALAPPDATA ?? os.homedir()}\\pi-nerdfont-unescape\\cmap.json`
     : process.platform === "darwin"
       ? `${os.homedir()}/Library/Caches/pi-nerdfont-unescape/cmap.json`
-      : `${os.homedir()}/.cache/pi-nerdfont-unescape/cmap.json`;
+      : `${os.homedir()}/.cache/pi-nerdfont-unescape/cmap.json`);
 const CMAP_STORE = Symbol.for("pi.nerdfontUnescape.cmap");
 const CMAP_SIG = Symbol.for("pi.nerdfontUnescape.cmapSig"); // 签名必须全局存活：reload 重置模块变量后仍可比对
+const CMAP_ASYNC_STATE = Symbol.for("pi.nerdfontUnescape.cmapAsyncState");
 
 type Ranges = Array<[number, number]>;
 
@@ -128,7 +130,7 @@ def sig(files):
     import hashlib
     h = hashlib.md5()
     for p in files:
-        try: h.update(("%s:%d\n" % (p, os.path.getmtime(p))).encode())
+        try: h.update(("%s:%d\\n" % (p, os.path.getmtime(p))).encode())
         except OSError: pass
     return h.hexdigest()
 if len(sys.argv) > 2 and sys.argv[2] == "sig":
@@ -153,13 +155,15 @@ function inRanges(rs: Ranges, cp: number): boolean {
   return false;
 }
 
-/** 读取磁盘缓存到共享存储；不存在或损坏返回 false。 */
+/** 读取磁盘缓存到共享存储；不存在、损坏或【缺签名】返回 false。
+ * 旧格式缓存（只有 ranges 没有 sig）必须视为迁移失败并触发重建——
+ * 否则签名失效机制会静默失明（外部评审判例）。 */
 function loadCmapCache(): boolean {
   try {
     const data = JSON.parse(require("node:fs").readFileSync(CMAP_CACHE, "utf8"));
-    if (!Array.isArray(data.ranges)) return false;
+    if (!Array.isArray(data.ranges) || typeof data.sig !== "string") return false;
     (globalThis as any)[CMAP_STORE] = data.ranges as Ranges;
-    cmapSig = typeof data.sig === "string" ? data.sig : undefined;
+    cmapSig = data.sig;
     (globalThis as any)[CMAP_SIG] = cmapSig; // 同步全局：NF 解析缓存失效判据
     return true;
   } catch {
@@ -170,18 +174,58 @@ function loadCmapCache(): boolean {
 /** 后台构建/刷新缓存（session_start 触发，不阻塞会话）。 */
 let cmapSig: string | undefined;
 
+type CmapAsyncState = { checking: boolean; building: boolean };
+
+function cmapAsyncState(): CmapAsyncState {
+  const g = globalThis as any;
+  if (!(g[CMAP_ASYNC_STATE] && typeof g[CMAP_ASYNC_STATE] === "object")) {
+    g[CMAP_ASYNC_STATE] = { checking: false, building: false } satisfies CmapAsyncState;
+  }
+  return g[CMAP_ASYNC_STATE] as CmapAsyncState;
+}
+
+function processErrorSummary(err: Error | null, stderr: unknown): string {
+  const tail = String(stderr ?? "").trim().split(/\r?\n/).filter(Boolean).slice(-2).join(" ");
+  const raw = tail || err?.message || "unknown process error";
+  return raw.replace(/\s+/g, " ").slice(0, 240);
+}
+
 function buildCmapCache(notify?: (msg: string, level: string) => void): void {
+  const state = cmapAsyncState();
+  if (state.building) return;
+  state.building = true;
   execFile("python3", ["-c", CMAP_BUILD_PY, CMAP_CACHE], { timeout: 120000, maxBuffer: 1 << 24 },
-    (err, stdout) => {
+    (err, stdout, stderr) => {
+      state.building = false;
       if (!err) {
         loadCmapCache();
         console.error(`[nerdfont-unescape] ${String(stdout).trim()}`);
         return;
       }
       // 失败（含 fontTools 缺失）：类别判定兜底可用，但必须留痕——静默降级是红线
-      const msg = `nerdfont-unescape: cmap 不可用（${err.message}）——可渲染性判定退化为类别判断；安装 python3 + fontTools 可恢复`;
-      console.error(`[nerdfont-unescape] cmap build FAILED: ${err.message}`);
+      const reason = processErrorSummary(err, stderr);
+      const msg = `nerdfont-unescape: cmap 不可用（${reason}）——可渲染性判定退化为类别判断；安装 python3 + fontTools 可恢复`;
+      console.error(`[nerdfont-unescape] cmap build FAILED: ${reason}`);
       notify?.(msg, "warning");
+    });
+}
+
+function checkCmapSignature(notify?: (msg: string, level: string) => void): void {
+  const state = cmapAsyncState();
+  if (state.checking || state.building) return;
+  state.checking = true;
+  execFile("python3", ["-c", CMAP_BUILD_PY, CMAP_CACHE, "sig"], { timeout: 20000, maxBuffer: 1 << 16 },
+    (err, stdout, stderr) => {
+      state.checking = false;
+      const cur = err ? undefined : String(stdout).trim();
+      if (err || !cur) {
+        const reason = err ? processErrorSummary(err, stderr) : "empty signature response";
+        const msg = `nerdfont-unescape: 字体签名核验失败（${reason}）；cmap 缓存失效检测暂时不可用`;
+        console.error(`[nerdfont-unescape] cmap signature check FAILED: ${reason}`);
+        notify?.(msg, "warning");
+        return;
+      }
+      if (cur !== (globalThis as any)[CMAP_SIG]) buildCmapCache(notify);
     });
 }
 
@@ -192,22 +236,22 @@ function ensureCmapCache(notify?: (msg: string, level: string) => void): void {
     // 必须从全局回填，否则签名比对永远失配/永不再触发（外部评审判例）
     if (cmapSig === undefined && typeof g[CMAP_SIG] === "string") cmapSig = g[CMAP_SIG];
     // 热升级场景：第五轮版本只留 CMAP_STORE、没有 CMAP_SIG——
-    // 从磁盘缓存恢复签名（loadCmapCache 会同步写全局）；文件也丢则后台重建
+    // 从磁盘缓存恢复签名（loadCmapCache 会同步写全局）；文件也丢/旧格式则后台重建
     if (typeof g[CMAP_SIG] !== "string") {
-      if (!loadCmapCache()) buildCmapCache(notify);
+      if (!loadCmapCache()) {
+        buildCmapCache(notify);
+        return;
+      }
     }
+    checkCmapSignature(notify);
     return;
   }
   if (!loadCmapCache()) {
     buildCmapCache(notify); // 无缓存：首次构建
     return;
   }
-  // 有缓存：签名校验（字体增删/更新则后台重建，旧表继续用，不空窗）
-  execFile("python3", ["-c", CMAP_BUILD_PY, CMAP_CACHE, "sig"], { timeout: 20000, maxBuffer: 1 << 16 },
-    (err, stdout) => {
-      const cur = err ? undefined : String(stdout).trim();
-      if (!err && cur && cur !== cmapSig) buildCmapCache(notify);
-    });
+  // Keep serving the previous map while checking for font changes in background.
+  checkCmapSignature(notify);
 }
 
 // [[nf:name]] 语义协议（v0.2）：模型写图标语义名，扩展按本机字体解析成

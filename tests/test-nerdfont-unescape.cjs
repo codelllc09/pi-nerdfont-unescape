@@ -14,6 +14,19 @@
  *   3. 单测全绿 ≠ 正确：真实消息的 Markdown 形态（双反引号包裹等）
  *      可能绕过保护。重要改动须配合 vision-verify.py 做端到端视觉验证。
  */
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+
+// Tests must never touch the user's production cache. The mutation auditor may
+// provide a reusable isolated cache; direct runs get their own temporary one.
+let ownedCacheDir = null;
+if (!process.env.PI_NF_CMAP_CACHE) {
+  ownedCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-nf-test-"));
+  process.env.PI_NF_CMAP_CACHE = path.join(ownedCacheDir, "cmap.json");
+  process.on("exit", () => fs.rmSync(ownedCacheDir, { recursive: true, force: true }));
+}
+
 const mod = require("./lib.cjs").jitiLoad();
 
 const h = {}; const notes = [];
@@ -34,6 +47,11 @@ const t = (name, ok, detail = "") => {
 
 (async () => {
   await h["session_start"]?.({}, {}); // 载入 cmap
+  // cmap 就绪等待：磁盘缓存无效时构建是异步的，早期用例（③可见替换）
+  // 依赖 cmap 在场——不等待会环境性假红（第八轮判例）
+  for (let i = 0; i < 40 && !globalThis[Symbol.for("pi.nerdfontUnescape.cmap")]; i++) {
+    await new Promise((r) => setTimeout(r, 3000));
+  }
 
   console.log("── ① 转义还原");
   let a = await end("图标 \\ue235 与 \\u{f0805} Azure");
@@ -228,15 +246,25 @@ const t = (name, ok, detail = "") => {
   }
 
   console.log("── ⑰ 热升级与断言收紧（第七轮外部评审）");
-  {
+  if (process.env.SKIP_SLOW) {
+    console.log("  (慢段跳过：SKIP_SLOW)");
+  } else {
     const SYM2 = Symbol.for("pi.nerdfontUnescape.nfCache");
     const SIG2 = Symbol.for("pi.nerdfontUnescape.cmapSig");
+    const ASYNC2 = Symbol.for("pi.nerdfontUnescape.cmapAsyncState");
     await safeEnd("[[nf:python]]");
+    for (let i = 0; i < 200 && (globalThis[ASYNC2]?.checking || globalThis[ASYNC2]?.building); i++) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
     const realSig = globalThis[SIG2];
     delete globalThis[SIG2]; // 模拟第五轮版本：有 STORE 无 SIG
     globalThis[SYM2] = { sig: "round5-sig", map: new Map([["python", null]]) };
     await h["session_start"]?.({}, ctx); // 热升级路径：应从磁盘恢复签名
-    const recovered = typeof globalThis[SIG2] === "string";
+    let recovered = typeof globalThis[SIG2] === "string";
+    for (let i = 0; i < 5 && !recovered; i++) {
+      await new Promise((r) => setTimeout(r, 3000));
+      recovered = typeof globalThis[SIG2] === "string";
+    }
     a = await safeEnd("[[nf:python]]");
     t("热升级签名迁移", recovered && !a.includes("[[nf:python]]") && !a.startsWith("崩溃:"), `recovered=${recovered}`);
     globalThis[SIG2] = "brand-new";
@@ -251,6 +279,69 @@ const t = (name, ok, detail = "") => {
   {
     const warn2 = notes.find((n) => n.includes("语法不合法")) ?? "";
     t("121/200字名告警", warn2.includes("c".repeat(121)) && warn2.includes("d".repeat(200)), JSON.stringify(notes).slice(0, 80));
+  }
+
+  console.log("── ⑱ 磁盘迁移与真实核验（第八轮）");
+  if (process.env.SKIP_SLOW) {
+    console.log("  (慢段跳过：SKIP_SLOW)");
+  } else {
+    {
+    const CSTK = Symbol.for("pi.nerdfontUnescape.cmap");
+    const SIGK = Symbol.for("pi.nerdfontUnescape.cmapSig");
+    const ASYNCK = Symbol.for("pi.nerdfontUnescape.cmapAsyncState");
+    const P = process.env.PI_NF_CMAP_CACHE;
+    const orig = fs.existsSync(P) ? fs.readFileSync(P, "utf8") : null;
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const realError = console.error;
+    try {
+      fs.writeFileSync(P, JSON.stringify({ fonts: ["fake"], ranges: [[57344, 57344]] })); // 旧格式：只有 ranges 没有 sig
+      delete globalThis[CSTK]; delete globalThis[SIGK];
+      globalThis[ASYNCK] = { checking: false, building: false };
+      const buildLogs = [];
+      console.error = (...args) => { buildLogs.push(args.map(String).join(" ")); };
+      await h["session_start"]?.({}, ctx);
+      const rejected = globalThis[CSTK] === undefined;
+      await h["session_start"]?.({}, ctx);
+      await h["session_start"]?.({}, ctx);
+      let ok = false, buildFailed = false;
+      for (let i = 0; i < 40 && !ok && !buildFailed; i++) {
+        ok = typeof globalThis[SIGK] === "string";
+        buildFailed = notes.some((n) => n.includes("cmap 不可用"));
+        if (!ok && !buildFailed) await wait(3000);
+      }
+      if (ok) await wait(3000); // Let concurrently started mutant builds finish logging.
+      console.error = realError;
+      const builds = buildLogs.filter((s) => s.includes("cmap cache:")).length;
+      t("旧格式缓存拒收并重建", rejected && ok, `rejected=${rejected}, sig=${typeof globalThis[SIGK]}`);
+      t("并发重建去重", builds === 1, `builds=${builds}`);
+      globalThis[SIGK] = "__tampered__"; // 篡改 → reload 必须靠真实字体签名核验纠正
+      let fixed = false;
+      for (let i = 0; i < 40 && !fixed; i++) {
+        await h["session_start"]?.({}, ctx);
+        await wait(3000);
+        fixed = typeof globalThis[SIGK] === "string" && globalThis[SIGK] !== "__tampered__";
+      }
+      t("reload真实签名核验", fixed, `sig=${String(globalThis[SIGK]).slice(0, 10)}`);
+      notes.length = 0;
+      const savedPath = process.env.PATH;
+      try {
+        process.env.PATH = "";
+        await h["session_start"]?.({}, ctx);
+        for (let i = 0; i < 20 && !notes.some((n) => n.includes("字体签名核验失败")); i++) await wait(100);
+      } finally {
+        process.env.PATH = savedPath;
+      }
+      t("签名核验失败留痕", notes.some((n) => n.includes("字体签名核验失败") && n.includes("[warning]")), JSON.stringify(notes));
+    } finally {
+      // Restore console.error even when the rebuild or assertion setup throws.
+      if (typeof realError === "function") console.error = realError;
+      // orig 无签名（假货/旧格式）时不还原——删除让下一会话重建真值，
+      // 防止异步构建竞态把 fake 留在盘上毒害后续运行（第八轮判例）
+      const origValid = orig !== null &&/"sig"/.test(orig);
+      if (origValid) fs.writeFileSync(P, orig);
+      else { try { fs.unlinkSync(P); } catch {} }
+    }
+  }
   }
 
   console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
