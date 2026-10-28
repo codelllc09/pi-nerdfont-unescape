@@ -137,6 +137,17 @@ const t = (name, ok, detail = "") => {
   a = await end("```\n内文 \\ue0b0\n```x\n仍内 \\ue0b0\n```\n外 \\ue235");
   t("非纯围栏行不闭合", a.includes("仍内 \\ue0b0") && !hasCp(a, 0xe0b0) && hasCp(a, 0xe235), JSON.stringify(a));
 
+  {
+    // Models quote configs/diffs inside blockquotes; a `> ``` fence must protect
+    // its body (flat and nested), while a quote WITHOUT a fence still restores.
+    a = await end("> ```\n> \\ue235\n> ```\n尾 \\ue0b0");
+    t("引用块围栏保护", a.includes("> \\ue235") && !hasCp(a, 0xe235) && hasCp(a, 0xe0b0), JSON.stringify(a));
+    a = await end("> > ```\n> > \\ue235\n> > ```");
+    t("嵌套引用围栏保护", a.includes("> > \\ue235") && !hasCp(a, 0xe235), JSON.stringify(a));
+    a = await end("> 引用里 \\ue235");
+    t("无围栏引用照常还原", hasCp(a, 0xe235), JSON.stringify(a));
+  }
+
   console.log("── ⑥ 行内代码段保护（v2 等长定界符）");
   // 回归 2026-10-27: 双反引号包裹形态曾绕过 v1 保护
   a = await end('| `` `symbol = "\\ue0b0"` `` 行内段 |');

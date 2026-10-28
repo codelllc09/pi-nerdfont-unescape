@@ -366,16 +366,22 @@ const NF_CACHE = Symbol.for("pi.nerdfontUnescape.nfCache");
 // content. Shared by both fence state machines (review round 15).
 const stripCr = (s: string): string => s.replace(/\r$/, "");
 
+// Blockquoted code fences (`> ```) are common when a model quotes a config or
+// diff; without this the fence is invisible and escapes inside it get restored,
+// corrupting text meant to be copied verbatim (round 22). Strip the quote
+// markers (possibly nested) before fence detection.
+const stripQuotes = (s: string): string => s.replace(/^(?:[ \t]{0,3}>[ \t]?)+/, "");
+
 function walkUnprotected(text: string, fn: (seg: string) => string): string {
   const FENCE = /^[ \t]*(`{3,}|~{3,})/;
   let fenceOpen: { ch: string; len: number } | null = null;
   return text
     .split("\n")
     .map((line) => {
-      const fm = line.match(FENCE);
+      const fm = stripQuotes(line).match(FENCE);
       if (fm) {
         const run = fm[1];
-        const rest = stripCr(line.slice((fm.index ?? 0) + fm[0].length));
+        const rest = stripCr(stripQuotes(line).slice((fm.index ?? 0) + fm[0].length));
         if (!fenceOpen) fenceOpen = { ch: run[0], len: run.length };
         else if (run[0] === fenceOpen.ch && run.length >= fenceOpen.len && /^[ \t]*$/.test(rest)) fenceOpen = null;
         return line;
@@ -532,10 +538,10 @@ function unescapeAtRisk(text: string): {
   const out = text
     .split("\n")
     .map((line) => {
-      const fm = line.match(FENCE);
+      const fm = stripQuotes(line).match(FENCE);
       if (fm) {
         const run = fm[1];
-        const rest = stripCr(line.slice((fm.index ?? 0) + fm[0].length));
+        const rest = stripCr(stripQuotes(line).slice((fm.index ?? 0) + fm[0].length));
         if (!fenceOpen) {
           fenceOpen = { ch: run[0], len: run.length }; // opening line may carry an info string (```js)
         } else if (
