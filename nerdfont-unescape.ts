@@ -262,6 +262,10 @@ function ensureCmapCache(notify?: (msg: string, level: string) => void): void {
 const NF_MARKER = /\[\[nf:([a-z0-9_.-]{1,40})\]\]/gi;
 const NF_CACHE = Symbol.for("pi.nerdfontUnescape.nfCache");
 
+// CRLF tolerance: a carriage return terminates the line, it is never fence
+// content. Shared by both fence state machines (review round 15).
+const stripCr = (s: string): string => s.replace(/\r$/, "");
+
 function walkUnprotected(text: string, fn: (seg: string) => string): string {
   const FENCE = /^[ \t]*(`{3,}|~{3,})/;
   let fenceOpen: { ch: string; len: number } | null = null;
@@ -271,7 +275,7 @@ function walkUnprotected(text: string, fn: (seg: string) => string): string {
       const fm = line.match(FENCE);
       if (fm) {
         const run = fm[1];
-        const rest = line.slice((fm.index ?? 0) + fm[0].length);
+        const rest = stripCr(line.slice((fm.index ?? 0) + fm[0].length));
         if (!fenceOpen) fenceOpen = { ch: run[0], len: run.length };
         else if (run[0] === fenceOpen.ch && run.length >= fenceOpen.len && /^[ \t]*$/.test(rest)) fenceOpen = null;
         return line;
@@ -396,7 +400,7 @@ function unescapeAtRisk(text: string): {
       const fm = line.match(FENCE);
       if (fm) {
         const run = fm[1];
-        const rest = line.slice((fm.index ?? 0) + fm[0].length);
+        const rest = stripCr(line.slice((fm.index ?? 0) + fm[0].length));
         if (!fenceOpen) {
           fenceOpen = { ch: run[0], len: run.length }; // opening line may carry an info string (```js)
         } else if (
@@ -622,7 +626,7 @@ function tofuFill(text: string): { text: string; filled: number; cps: number[] }
   //     codepoint: fill a trailing box, but only OUTSIDE fences/inline code
   let filled = 0;
   const cps: number[] = [];
-  const LUALINE = /(--[ \t]*U\+[0-9A-Fa-f]{4,6})[ \t]*$/; // 4-6 hex (PUA-B needs 6)
+  const LUALINE = /(--[ \t]*U\+[0-9A-Fa-f]{4,6})[ \t]*\r?$/; // 4-6 hex (PUA-B needs 6); \r? = CRLF tolerance
   text = walkUnprotected(text, (seg) =>
     seg.replace(LUALINE, (m) => {
       const hex = /U\+([0-9A-Fa-f]{4,6})/.exec(m);
@@ -639,7 +643,10 @@ function tofuFill(text: string): { text: string; filled: number; cps: number[] }
       if (seg.includes(String.fromCodePoint(cp)) || seg.includes(marker)) return m;
       filled++;
       cps.push(cp);
-      return m + " " + TOFU;
+      // Keep the box inside the line: in CRLF text the trailing \r belongs
+      // after the marker, otherwise the box lands at the head of the next line
+      const cr = m.endsWith("\r") ? "\r" : "";
+      return m.slice(0, m.length - cr.length) + " " + TOFU + cr;
     }),
   );
   return { text, filled, cps };

@@ -392,6 +392,19 @@ const t = (name, ok, detail = "") => {
     t("三反斜杠确定性处理", a.includes("\\\\ue235") && !a.includes("\\\\\\ue235") && !hasCp(a, 0xe235), JSON.stringify(a));
   }
 
+  console.log("── ㉑ CRLF 文本（Windows/剪贴板粘贴）");
+  {
+    const esc = (h) => "\\" + "u" + h; // build escapes by concatenation: dodges JS literal escapes
+    const crlf = "前 " + esc("e235") + "\r\n```\r\n-- U+E235\r\n```\r\n后 " + esc("e0b0");
+    a = await end(crlf);
+    // fence body stays literal text "-- U+E235"; the escape AFTER the fence must restore
+    t("CRLF围栏闭合被识别", hasCp(a, 0xe0b0) && a.includes("-- U+E235"), JSON.stringify(a.slice(0, 70)));
+  }
+  {
+    a = await end("\u56fe\u6807\r\n-- U+E235\r\n\u5c3e x");
+    t("CRLF下行内补框", a.includes("-- U+E235 \u25a1\r\n") && !a.includes("\r \u25a1"), JSON.stringify(a));
+  }
+
   console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error("套件崩溃:", e); process.exit(1); });
