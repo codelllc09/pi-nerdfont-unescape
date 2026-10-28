@@ -29,9 +29,14 @@ WORK=$(mktemp -d /tmp/tui-pixel-XXXXXX)
 command -v Xvfb >/dev/null || { echo "需要 Xvfb：sudo dnf install -y xorg-x11-server-Xvfb" >&2; exit 2; }
 command -v import >/dev/null || { echo "需要 ImageMagick 的 import" >&2; exit 2; }
 
+# Only ever kill what this script started, and kill it as a process GROUP.
+# WezTerm forks a wezterm-gui child, so killing the launcher alone leaves the GUI
+# behind — and cleaning that up by name (`pkill -f wezterm-gui`) is how a real
+# user terminal got killed once (2026-10-29). setsid gives the probe its own
+# session, so `kill -- -$WEZ` can only reach our own subtree.
 cleanup() {
   tmux kill-session -t "pix-$$" 2>/dev/null || true
-  [ -n "${WEZ:-}" ] && kill "$WEZ" 2>/dev/null || true
+  [ -n "${WEZ:-}" ] && kill -TERM -- "-$WEZ" 2>/dev/null || true
   [ -n "${SRV:-}" ] && kill "$SRV" 2>/dev/null || true
   [ -n "${WPID:-}" ] && kill "$WPID" 2>/dev/null || true
   rm -rf "$WORK"
@@ -53,7 +58,7 @@ sleep 2
 # lands on the user's real desktop instead of the virtual X screen (that is not
 # hypothetical — it happened once). --noprofile/--norc keeps the user's shell
 # rc noise out of the capture.
-env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 DISPLAY=":$DISPLAY_NUM" \
+setsid env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 DISPLAY=":$DISPLAY_NUM" \
   wezterm --config 'front_end="Software"' --config "initial_cols=160" --config "initial_rows=46" \
   start --always-new-process -- bash --noprofile --norc -c "cd /tmp && pi \
       --extension '$ROOT/scripts/tui-probe/fake-provider.ts' \
