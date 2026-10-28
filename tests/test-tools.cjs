@@ -9,13 +9,16 @@
  */
 // 工具与 cmap 同源依赖：python3 + fontTools。缺失即失败——静默跳过等于假绿
 {
-  // 隔离缓存（与套件1同款）：绝不触碰用户生产缓存
+  // Hermetic cache, suite1's pattern verbatim: create only when the caller
+  // (mutation auditor) hasn't provided a reusable one; always clean up.
   const path = require("path");
   const os = require("os");
   const fs = require("fs");
-  const ownedCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-nf-suite2-"));
-  process.env.PI_NF_CMAP_CACHE = path.join(ownedCacheDir, "cmap.json");
-  if (ownedCacheDir) void ownedCacheDir;
+  if (!process.env.PI_NF_CMAP_CACHE) {
+    const owned = fs.mkdtempSync(path.join(os.tmpdir(), "pi-nf-suite2-"));
+    process.env.PI_NF_CMAP_CACHE = path.join(owned, "cmap.json");
+    process.on("exit", () => fs.rmSync(owned, { recursive: true, force: true }));
+  }
 }
 {
   const { spawnSync } = require("child_process");

@@ -202,7 +202,9 @@ function buildCmapCache(notify?: (msg: string, level: string) => void): void {
         console.error(`[nerdfont-unescape] ${String(stdout).trim()}`);
         return;
       }
-      // Failure (incl. missing fontTools): category fallback still works,
+      // Failure (incl. missing fontTools): inherently-invisible codepoints
+      // still substitute visibly; everything else degrades conservatively to
+      // □U+XXXX — and the degrade must leave a trace (red line):
       const reason = processErrorSummary(err, stderr);
       const msg = `nerdfont-unescape: cmap unavailable (${reason}) — at-risk escapes will render as visible □U+XXXX markers (conservative: unknown font state counts as no glyph); install python3 + fontTools to restore real glyphs`;
       console.error(`[nerdfont-unescape] cmap build FAILED: ${reason}`);
@@ -609,7 +611,7 @@ function splitByInlineSpans(line: string): Array<{ text: string; protected: bool
 }
 
 // Traces → placeholder filling (returns replaced text and fill count)
-function tofuFill(text: string): { text: string; filled: number; cps: (number | null)[] } {
+function tofuFill(text: string): { text: string; filled: number; cps: number[] } {
   // Evidence-only fill layer (observation tier, never guesses):
   //   - empty quote/backtick pairs are NOT rewritten (2026-10-28 review): a
   //     legit "" and a channel-dropped PUA char between quotes produce
@@ -619,7 +621,7 @@ function tofuFill(text: string): { text: string; filled: number; cps: (number | 
   //   - Lua-style codepoint comments (-- U+E235) DO carry a concrete
   //     codepoint: fill a trailing box, but only OUTSIDE fences/inline code
   let filled = 0;
-  const cps: (number | null)[] = [];
+  const cps: number[] = [];
   const LUALINE = /(--[ \t]*U\+[0-9A-Fa-f]{4,6})[ \t]*$/; // 4-6 hex (PUA-B needs 6)
   text = walkUnprotected(text, (seg) =>
     seg.replace(LUALINE, (m) => {
@@ -627,9 +629,12 @@ function tofuFill(text: string): { text: string; filled: number; cps: (number | 
       const cp = hex ? parseInt(hex[1], 16) : null;
       if (cp === null || cp > 0x10ffff) return m; // beyond the codespace: not our trace
       if (!isAtRisk(cp)) return m; // e.g. U+0041 'A': a safe codepoint, nothing was dropped
-      // Compliance check: the codepoint already present (e.g. a restored
-      // escape) means nothing was lost — no fill
-      if (text.includes(String.fromCodePoint(cp))) return m;
+      // Compliance check scoped to THIS segment: an already-restored escape
+      // on the same line means nothing was lost here. Searching the whole
+      // message once suppressed genuine loss traces — a codepoint present in
+      // an unrelated line/fence must NOT silence an explicit "-- U+XXXX lost"
+      // comment elsewhere (review round 11)
+      if (seg.includes(String.fromCodePoint(cp))) return m;
       filled++;
       cps.push(cp);
       return m + " " + TOFU;
@@ -1102,8 +1107,7 @@ Markers and escapes inside code spans or fences are never touched.`
     let filled = 0;
     const restoredCps: number[] = [];
     const substitutedCps: number[] = [];
-    const fillKnown: number[] = [];
-    let fillUnknown = 0;
+    const fillCps: number[] = [];
     let hatched = 0;
 
     const content = [];
@@ -1125,7 +1129,7 @@ Markers and escapes inside code spans or fences are never touched.`
         if (r.filled > 0) {
           text = r.text;
           filled += r.filled;
-          for (const cp of r.cps) cp === null ? fillUnknown++ : fillKnown.push(cp);
+          fillCps.push(...r.cps);
         }
       }
       if (text === block.text) content.push(block);
@@ -1173,9 +1177,8 @@ Markers and escapes inside code spans or fences are never touched.`
         : "";
     if (filled > 0) {
       const dropEntries: string[] = [];
-      const known = summarize(fillKnown);
+      const known = summarize(fillCps);
       if (known) dropEntries.push(known);
-      if (fillUnknown > 0) dropEntries.push(`unknown ×${fillUnknown}`);
       let warn = `⚠ ${filled} char${filled === 1 ? "" : "s"} likely dropped by the model — now shown as ${TOFU} placeholders (drop regions: ${dropEntries.join(", ")})`;
       if (restoredPart) warn += `; ${restoredPart}`;
       warn += ". Ask it to resend with \\uXXXX escapes to recover them";

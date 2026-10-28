@@ -86,8 +86,16 @@ const t = (name, ok, detail = "") => {
     a = await end(noTouch);
     t("空引号逐字节不变+零通知", a === noTouch && notes.length === before, JSON.stringify(a));
   }
-  a = await end("icon annotation: -- U+0041");
-  t("安全码位注释不补框", !a.includes("□"), JSON.stringify(a));
+  {
+    const safeCp = "icon annotation: -- U+0041";
+    const before2 = notes.length;
+    a = await end(safeCp);
+    t("安全码位不补框+零通知", a === safeCp && notes.length === before2, JSON.stringify(a));
+  }
+  a = await end("present \\ue235\nicon lost: -- U+E235");
+  t("跨行同码位不压制", (a.split("\n")[1] ?? "").includes("-- U+E235 □"), JSON.stringify(a));
+  a = await end("icon \\ue235 same line: -- U+E235");
+  t("同段同码位仍压制", !a.includes("□"), JSON.stringify(a));
   a = await end("icon lost: -- U+100000");
   t("六位码位注释补框", a.includes("-- U+100000 □"), JSON.stringify(a));
   a = await end("icon lost: -- U+E235");
