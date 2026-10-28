@@ -107,7 +107,10 @@ const CMAP_ASYNC_STATE = Symbol.for("pi.nerdfontUnescape.cmapAsyncState");
 // literal that a second pass would happily restore into a glyph, corrupting a
 // deliberate literal (round 17). Bounded FIFO, exact match only — a genuine
 // model message is never byte-identical to a whole emitted message by accident.
-// name → glyph name for non-icon resolutions (message honesty; cleared with NF_CACHE)
+// name → glyph name for non-icon resolutions (message honesty). Cleared with the
+// resolution cache on a font-set change: today's resolver always emits the glyph
+// name alongside ~cp, so a stale read is unreachable — but the warning must not
+// depend on that invariant staying true (review 2026-10-29).
 const NON_ICON_MATCH = new Map<string, string>();
 const EMITTED = Symbol.for("pi.nerdfontUnescape.emitted");
 const EMITTED_MAX = 16;
@@ -412,6 +415,7 @@ async function resolveNfMarkers(text: string, notify?: (msg: string, level: Noti
   const curSig = (globalThis as any)[CMAP_SIG] as string | undefined;
   if (store.sig !== curSig) {
     store.map.clear(); // font-set fingerprint changed → drop the whole resolution cache
+    NON_ICON_MATCH.clear(); // …and the glyph names recorded alongside it
     store.sig = curSig; // write back the comparison basis (a module-local here re-cleared every message)
   }
   const cache = store.map;

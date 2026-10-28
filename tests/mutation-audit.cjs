@@ -278,7 +278,7 @@ const MUTATIONS = [
   { name: "M72 显式终端字体来源失真", suites: [1], slow: true,
     old: 'return found, "explicit"', count: 2,
     new: 'return found, "mutated"' },
-  { name: "M73 lookup忽略显式终端字体", suites: [1, 2],
+  { name: "M88 lookup忽略显式终端字体", suites: [1, 2],
     old: "fonts, font_source = discover_fonts()",
     new: 'fonts, font_source = [], "mutated"' },
 ];

@@ -20,11 +20,14 @@ jobs:
           registry-url: https://registry.npmjs.org
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - run: python -m pip install --disable-pip-version-check fonttools
       - run: npm install
       # prepublishOnly runs `npm test` again on this clean machine: the artifact is
       # only published if the suites pass somewhere other than the author's box.
+      # The mutation audit is deliberately NOT part of publish (it takes minutes and
+      # has already gated the tagged commit in ci.yml); publishing should not be
+      # blocked by a long job that the same commit already passed.
       - run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
