@@ -46,6 +46,7 @@
 		"README.md",
 		"README.zh-CN.md",
 		"DEVELOPMENT.md",
+		"tsconfig.json",
 		"LICENSE",
 		"tests/",
 		"!tests/__pycache__",
