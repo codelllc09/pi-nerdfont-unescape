@@ -9,8 +9,8 @@ Maintainer notes. For what the extension does and how to use it, see
 nerdfont-unescape.ts    the extension (single file): protocol injection, the
                         transform pipeline, and the two tools
 tests/lib.cjs           locates pi, loads the extension, builds font fixtures
-tests/test-*.cjs        two regression suites (112 assertions)
-tests/mutation-audit.cjs  86 mutations; proves every assertion can fail
+tests/test-*.cjs        two regression suites (113 assertions)
+tests/mutation-audit.cjs  87 mutations; proves every assertion can fail
 tests/guard-layout.cjs file identity + build-portability guard
 tests/gen-review.cjs   generates review.html: every case with its expected value
 scripts/safe-run.sh    cgroup memory ceiling; all suites run through it
@@ -20,8 +20,8 @@ scripts/tui-probe/     model-free TUI probes (see below)
 ## Tests
 
 ```bash
-npm test                  # 112 assertions, no model calls, ~20 s
-npm run test:audit        # 86 mutations, proves each assertion can fail
+npm test                  # 113 assertions, no model calls, ~20 s
+npm run test:audit        # 87 mutations, proves each assertion can fail
 npm run test:audit -- --only "M6[0-9]" --jobs 4   # targeted slice
 npm run test:audit -- --fresh                     # ignore the resume journal
 npm run test:audit -- --list                      # mutation names only

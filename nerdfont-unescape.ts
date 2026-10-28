@@ -1218,9 +1218,19 @@ export default function (pi: ExtensionAPI) {
         const tilde = wp.startsWith("~") ? os.homedir() + wp.slice(1) : wp;
         const abs = pathMod.isAbsolute(tilde) ? tilde : pathMod.resolve(tilde);
         // Realpath containment: resolve symlinks first (/tmp/x → /dev/null must not slip through)
-        const realAbs = fsMod.existsSync(abs)
-          ? fsMod.realpathSync(abs)
-          : pathMod.join(fsMod.realpathSync(pathMod.dirname(abs)), pathMod.basename(abs));
+        // A path whose parent does not exist used to throw a raw ENOENT out of the
+        // tool; report it instead of crashing the call.
+        let realAbs: string;
+        try {
+          realAbs = fsMod.existsSync(abs)
+            ? fsMod.realpathSync(abs)
+            : pathMod.join(fsMod.realpathSync(pathMod.dirname(abs)), pathMod.basename(abs));
+        } catch (e: any) {
+          return {
+            content: [{ type: "text", text: `ERROR: writePath cannot be resolved (${e?.code ?? "error"}): ${abs}. Create the parent directory first, or drop writePath.` }],
+            details: {},
+          };
+        }
         const inside = (root: string) => {
           const rr = fsMod.realpathSync(root);
           return realAbs === rr || realAbs.startsWith(rr + pathMod.sep);

@@ -656,9 +656,20 @@ sys.argv=args; ss(); print(base64.b64encode(open("/tmp/nf-subset.woff2","rb").re
     { encoding: "utf8", timeout: 60000 },
   );
   const b64 = (woff2.stdout || "").trim().split("\n").pop();
-  const fontCss = b64 && b64.length > 100
+  // A missing/unreadable font used to yield an empty @font-face while the summary
+  // still claimed the glyphs were embedded — the page then shows tofu and is
+  // useless for visual review, silently. Say it, and fail the exit code.
+  const subOk = !!(b64 && b64.length > 100);
+  const fontCss = subOk
     ? `@font-face{font-family:"NFIcons";src:url(data:font/woff2;base64,${b64}) format("woff2");font-display:block}`
     : "";
+  if (!subOk) {
+    const why = String((woff2.stderr || woff2.error || "no output")).trim().split("\n").pop();
+    console.error(`✗ 未能内嵌图标字体：${why}`);
+    console.error(`  源字体不存在或无权限：${NF_SRC}`);
+    console.error("  页面里的图标会显示成豆腐块，不能用于视觉/像素审查。用 PI_NF_FONT 指向可用的 Nerd Font。");
+    process.exitCode = 1;
+  }
   const html2 = html.replace("/*FONTCSS*/", fontCss);
   const reviewOut = process.env.PI_NF_REVIEW_OUT || path.join(__dirname, "..", "review.html");
   fs.writeFileSync(reviewOut, html2);
@@ -666,5 +677,7 @@ sys.argv=args; ss(); print(base64.b64encode(open("/tmp/nf-subset.woff2","rb").re
     console.error(`断言失败 ${assertFail}/${CASES.length}: ${failNames.join(", ")}`);
     process.exitCode = 1;
   }
-  console.log(`${path.basename(reviewOut)} 生成完毕（${CASES.length} 用例，断言 ${assertPass}/${CASES.length} 通过，内嵌 ${cps.length} 个图标字形子集 ${cps.map((c) => "U+" + c.toString(16).toUpperCase()).join(" ")}）`);
+  console.log(`${path.basename(reviewOut)} 生成完毕（${CASES.length} 用例，断言 ${assertPass}/${CASES.length} 通过，${
+    subOk ? `内嵌 ${cps.length} 个图标字形子集 ${cps.map((c) => "U+" + c.toString(16).toUpperCase()).join(" ")}` : "未内嵌图标字体（图标会显示为豆腐块）"
+  }）`);
 })();

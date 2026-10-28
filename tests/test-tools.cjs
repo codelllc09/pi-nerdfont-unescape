@@ -110,6 +110,22 @@ run(async () => {
       const r = await tools.render_preview.execute("t", params);
       return r.content[0].text;
     };
+    // 回归（终极 review）：writePath 的父目录不存在时，realpathSync 曾把原始
+    // ENOENT 抛出工具边界，模型收到的是一条 Node 异常而不是可读错误。
+    {
+      const missing = `/tmp/pi-nf-nodir-${process.pid}-${Date.now()}/out.txt`;
+      // Catch a throw here: a rejecting tool must turn this into a *failing*
+      // assertion, not a crashed suite — the audit treats a crash as an invalid
+      // mutation (it cannot tell what the test would have said).
+      let txt = "";
+      try {
+        const r = await tools.render_preview.execute("t", { content: "x", writePath: missing });
+        txt = r.content[0].text;
+      } catch (e) {
+        txt = `THREW: ${e && e.message}`;
+      }
+      t("writePath父目录缺失给出可读错误", txt.startsWith("ERROR: writePath cannot be resolved"), txt.slice(0, 100));
+    }
     let out = await render({ content: "中文", width: 8 });
     // CJK=2 列：2 字 = 4 列，宽 8 → 右补 4 空格（左对齐）
     t("CJK 宽度算术 + 右补齐", out.split("\n")[1] === "中文    " && out.includes("8 cols"), JSON.stringify(out));

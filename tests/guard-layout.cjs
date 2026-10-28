@@ -63,5 +63,22 @@ check("lib: 安装目录只认 PI_NF_PI_ROOT（不劫持官方变量）",
   libCode.includes("PI_NF_PI_ROOT") && !libCode.includes("PI_CODING_AGENT_DIR"));
 check("lib: 导出 resolveEntry 供套件复用", /module\.exports\s*=\s*\{[^}]*resolveEntry/.test(libCode));
 
+// 5) 临时目录清扫（为什么在守卫里：它测的是测试基建，扩展变异杀不死，
+//    放进套件里就会被审计标成"装饰品"）。两条断言方向相反，缺一不可：
+//    只删不作为 → 第一条红；连新鲜的也删 → 第二条红。
+{
+  const os = require("os");
+  const pth = require("path");
+  const { sweepStaleTempDirs } = require("./lib.cjs");
+  const stale = fs.mkdtempSync(pth.join(os.tmpdir(), "pi-nf-test-"));
+  const fresh = fs.mkdtempSync(pth.join(os.tmpdir(), "pi-nf-test-"));
+  const threeHoursAgo = new Date(Date.now() - 3 * 3600 * 1000);
+  fs.utimesSync(stale, threeHoursAgo, threeHoursAgo);
+  sweepStaleTempDirs();
+  check("清扫删除过期临时目录（SIGKILL 残留）", !fs.existsSync(stale));
+  check("清扫保留新鲜临时目录（不动在跑的任务）", fs.existsSync(fresh));
+  fs.rmSync(fresh, { recursive: true, force: true });
+}
+
 console.log(fail ? `\n✗ 结构守卫失败 ${fail} 项` : "\n✓ 结构守卫通过（文件身份与结构完整）");
 process.exit(fail ? 1 : 0);

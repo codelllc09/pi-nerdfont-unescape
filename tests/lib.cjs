@@ -165,6 +165,38 @@ coll = TTCollection(); coll.fonts = [TTFont(a), TTFont(b)]; coll.save(sys.argv[1
   process.env.PI_NF_FONT_PATHS = parent;
 }
 
+/**
+ * Sweep stale temp dirs from killed runs.
+ *
+ * Every suite cleans up on exit, but SIGKILL (or a cgroup OOM kill) skips exit
+ * handlers — one manual cleanup found 47 leftovers. Age-gated at two hours so a
+ * live run is never touched, and prefix-gated so nothing outside our own names is
+ * ever considered (a maintenance script must not reach what it did not create).
+ * PI_NF_NO_SWEEP=1 disables it.
+ */
+function sweepStaleTempDirs() {
+  if (process.env.PI_NF_NO_SWEEP === "1") return;
+  const dir = os.tmpdir();
+  const prefixes = ["pi-nf-testcache-", "pi-nf-font-fixture-", "pi-nf-test-", "pi-nf-suite2-", "pi-nf-audit-", "pi-nf-review-"];
+  const cutoff = Date.now() - 2 * 60 * 60 * 1000;
+  let entries;
+  try {
+    entries = fs.readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const name of entries) {
+    if (!prefixes.some((p) => name.startsWith(p))) continue;
+    const full = path.join(dir, name);
+    try {
+      const st = fs.statSync(full);
+      if (st.isDirectory() && st.mtimeMs < cutoff) fs.rmSync(full, { recursive: true, force: true });
+    } catch {
+      // another process may be removing the same entry; that is the desired end state
+    }
+  }
+}
+
 function extPath() {
   return process.env.EXT_PATH || path.join(__dirname, "..", "nerdfont-unescape.ts");
 }
@@ -195,6 +227,7 @@ function resolveEntry(id, D) {
 }
 
 function jitiLoad() {
+  sweepStaleTempDirs(); // before creating anything of our own
   ensureTestCache();
   ensureFixtureFont();
   const D = piRoot();
@@ -215,4 +248,4 @@ function jitiLoad() {
   return load(extPath());
 }
 
-module.exports = { piRoot, extPath, jitiLoad, resolveEntry };
+module.exports = { piRoot, extPath, jitiLoad, resolveEntry, sweepStaleTempDirs };
