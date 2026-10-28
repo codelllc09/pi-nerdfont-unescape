@@ -534,12 +534,22 @@ const CASES = [
         else if (c.name === "签名核验失败留痕") {
           notes.length = 0;
           const savedPath = process.env.PATH;
+          // This case simulates a missing python3 by emptying PATH. The extension
+          // reports that on stderr by design, which would otherwise look like a
+          // real failure in this report's output — label it instead of hiding it.
+          const realErr = console.error;
+          console.error = (...args) => {
+            const line = args.map(String).join(" ");
+            if (line.includes("[nerdfont-unescape]")) realErr(`    (模拟用例预期 stderr) ${line}`);
+            else realErr(...args);
+          };
           try {
             process.env.PATH = "";
             await handlers["session_start"]?.({}, ctx);
             for (let i = 0; i < 20 && !notes.some((n) => n.includes("font signature check failed")); i++) await new Promise((r) => setTimeout(r, 100));
           } finally {
             process.env.PATH = savedPath;
+            console.error = realErr;
           }
           actual = notes.find((n) => n.includes("font signature check failed")) ?? "(无告警)";
           src = null;
