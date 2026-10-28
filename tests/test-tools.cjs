@@ -155,6 +155,14 @@ run(async () => {
 
 
   console.log("── ⑪ 系统提示注入（before_agent_start）");
+  {
+    // pi may fire this hook more than once (relay/compaction); a doubled
+    // protocol wastes context and repeats instructions (round 17).
+    const r1 = await handlers["before_agent_start"]({ systemPrompt: "BASE" }, ctx);
+    const r2 = await handlers["before_agent_start"]({ systemPrompt: r1.systemPrompt }, ctx);
+    const count = (t) => (t ?? "").split("[nerdfont-unescape output protocol]").length - 1;
+    t("协议注入幂等（二次不叠加）", count(r1.systemPrompt) === 1 && r2 === undefined, `first=${count(r1.systemPrompt)}, second=${r2 === undefined ? "untouched" : count(r2.systemPrompt)}`);
+  }
   const r = await handlers["before_agent_start"]({ systemPrompt: "BASE" }, ctx);
   t("追加而非替换", r.systemPrompt.startsWith("BASE"));
   t("协议块在场", r.systemPrompt.includes("nerdfont-unescape output protocol") && r.systemPrompt.includes("\\uXXXX"));

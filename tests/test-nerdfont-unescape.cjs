@@ -17,6 +17,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { spawnSync } = require("child_process");
 
 // Tests must never touch the user's production cache. The mutation auditor may
 // provide a reusable isolated cache; direct runs get their own temporary one.
@@ -441,6 +442,67 @@ const t = (name, ok, detail = "") => {
     const odd = "\\\\" + "\\u" + "e235";
     a = await end("奇 " + odd + " 数");
     t("三反斜杠确定性处理", a.includes("\\\\ue235") && !a.includes("\\\\\\ue235") && !hasCp(a, 0xe235), JSON.stringify(a));
+  }
+
+  console.log("── ㉓ 内置 BMP 分配表不变量");
+  {
+    // The table decides "is this BMP codepoint assigned?" — a bad regeneration
+    // would mark real characters as invisible and substitute them with □ (a
+    // visible but WRONG result). Verify structure, then cross-check against the
+    // local Python's unicodedata when it is at least as new as the table.
+    const srcPath = process.env.EXT_PATH || path.join(__dirname, "..", "nerdfont-unescape.ts");
+    const raw = /const ASSIGNED_BMP_RAW = "([^"]+)"/.exec(fs.readFileSync(srcPath, "utf8"))?.[1] ?? "";
+    const ranges = raw.split(",").filter(Boolean).map((x) => {
+      const [a, b] = x.split("-");
+      return [parseInt(a, 16), parseInt(b ?? a, 16)];
+    });
+    const sorted = ranges.every(([a, b], i) => a <= b && (i === 0 || a > ranges[i - 1][1]));
+    const inBmp = ranges.every(([a, b]) => a >= 0 && b <= 0xffff);
+    const noSurrogates = !ranges.some(([a, b]) => b >= 0xd800 && a <= 0xdfff);
+    t("分配表结构合法（有序/不重叠/BMP内/排除代理区）", ranges.length > 300 && sorted && inBmp && noSurrogates, `n=${ranges.length}`);
+    const has = (cp) => ranges.some(([a, b]) => cp >= a && cp <= b);
+    t("分配表抽样正确（A/中文/韩文不在表中=未分配区）", has(0x41) && has(0x4e00) && has(0xac00) && !has(0x0378) && !has(0xe0000), "");
+    const py = spawnSync("python3", ["-c", `
+import sys, unicodedata
+if tuple(int(x) for x in unicodedata.unidata_version.split(".")) < (16, 0):
+    print("SKIP", unicodedata.unidata_version); raise SystemExit
+raw = sys.stdin.read().strip()
+rs = []
+for part in raw.split(","):
+    a, _, b = part.partition("-")
+    rs.append((int(a, 16), int(b or a, 16)))
+def has(cp):
+    lo, hi = 0, len(rs) - 1
+    while lo <= hi:
+        m = (lo + hi) // 2
+        x, y = rs[m]
+        if cp < x: hi = m - 1
+        elif cp > y: lo = m + 1
+        else: return True
+    return False
+bad = [cp for cp in range(0x10000)
+       if not (0xd800 <= cp <= 0xdfff) and has(cp) != (unicodedata.category(chr(cp)) != "Cn")]
+print("MISMATCH", len(bad), ["%04X" % c for c in bad[:8]] if bad else "OK")
+`], { input: raw, encoding: "utf8" });
+    const out = String(py.stdout || "").trim();
+    if (out.startsWith("SKIP")) {
+      console.log(`  (Unicode 交叉校验跳过：本地 unicodedata ${out.slice(5)} < 16.0)`);
+    } else {
+      t("分配表与本地 Unicode 一致", /OK$/.test(out), out.slice(0, 120));
+    }
+  }
+
+  console.log("── ㉒ 重复处理幂等（双重注册 / reload 残留）");
+  {
+    // The hatch form `\\ue235` displays as a single-backslash literal; feeding
+    // that output back through the pipeline used to restore it into a glyph and
+    // corrupt the deliberate literal (round 17).
+    const bs = "\\";
+    const first = await end("字面 " + bs + bs + "ue235 与真 " + bs + "u" + "e0b0");
+    const second = await end(first);
+    const third = await end(second);
+    t("二次处理不腐蚀字面量", second === first && third === first, JSON.stringify(second));
+    t("首轮仍正常还原", hasCp(first, 0xe0b0) && first.includes(bs + "ue235"), JSON.stringify(first));
   }
 
   console.log("── ㉑ CRLF 文本（Windows/剪贴板粘贴）");

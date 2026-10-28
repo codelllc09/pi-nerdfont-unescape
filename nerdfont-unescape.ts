@@ -23,6 +23,7 @@ import { Type } from "typebox";
 import { execFile } from "node:child_process";
 
 const TOFU = "\u25A1"; // □ missing-glyph box
+const PROTOCOL_TITLE = "[nerdfont-unescape output protocol]"; // single source of truth for injection + idempotency
 const visibleMarker = (cp: number): string =>
   `${TOFU}U+${cp.toString(16).toUpperCase().padStart(4, "0")}`;
 
@@ -96,6 +97,26 @@ const CMAP_CACHE =
 const CMAP_STORE = Symbol.for("pi.nerdfontUnescape.cmap");
 const CMAP_SIG = Symbol.for("pi.nerdfontUnescape.cmapSig"); // must live globally: module vars reset on reload
 const CMAP_ASYNC_STATE = Symbol.for("pi.nerdfontUnescape.cmapAsyncState");
+// Texts this pipeline has already emitted. Chained/duplicated message_end
+// handlers (double registration, a /reload that left the old instance alive)
+// feed our own output back in: the hatched form `\ue235` is a single-backslash
+// literal that a second pass would happily restore into a glyph, corrupting a
+// deliberate literal (round 17). Bounded FIFO, exact match only — a genuine
+// model message is never byte-identical to a whole emitted message by accident.
+const EMITTED = Symbol.for("pi.nerdfontUnescape.emitted");
+const EMITTED_MAX = 16;
+function emittedTexts(): string[] {
+  const g = globalThis as any;
+  if (!Array.isArray(g[EMITTED])) g[EMITTED] = [];
+  return g[EMITTED] as string[];
+}
+function pushedEmitted(text: string): void {
+  const list = emittedTexts();
+  list.push(text);
+  while (list.length > EMITTED_MAX) list.shift();
+}
+const joinBlocks = (blocks: any[]): string =>
+  blocks.map((b) => (b?.type === "text" && typeof b.text === "string" ? b.text : "\u0000")).join("\u0000");
 
 type Ranges = Array<[number, number]>;
 
@@ -1185,14 +1206,18 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  // Inject the output protocol into the system prompt (every turn)
+  // Inject the output protocol into the system prompt (every turn).
+  // Idempotent: a prompt that already carries the block is left alone — pi may
+  // fire this hook more than once (relay/compaction/chained extensions) and a
+  // doubled protocol wastes context and repeats instructions (round 17).
   pi.on("before_agent_start", async (event) => {
+    if ((event.systemPrompt ?? "").includes(PROTOCOL_TITLE)) return;
     return {
       systemPrompt:
         (event.systemPrompt ?? "") +
         `
 
-[nerdfont-unescape output protocol]
+${PROTOCOL_TITLE}
 Your output channel silently drops BMP Private Use characters (U+E000–
 U+F8FF; every Nerd Font dev-/seti-/cod-/fa-/oct-/custom-/linux- icon lives
 there — empirically always dropped). The supplementary PUA planes
@@ -1244,6 +1269,7 @@ Markers and escapes inside code spans or fences are never touched.`
   pi.on("message_end", async (event, ctx) => {
     const msg = event.message as any;
     if (msg?.role !== "assistant" || !Array.isArray(msg.content)) return;
+    if (emittedTexts().includes(joinBlocks(msg.content))) return; // already ours: never process our own output twice
 
     let restored = 0;
     let filled = 0;
@@ -1306,9 +1332,15 @@ Markers and escapes inside code spans or fences are never touched.`
     // Hatch-only rewrites must still land (double → single backslash display);
     // review precedent: hatched went uncounted once and this return dropped the rewrite (a real fake-green)
     if (restored === 0 && filled === 0 && substitutedCps.length === 0) {
-      if (hatched > 0 || contentChanged) return { message: { ...msg, content } }; // carry every mapped rewrite
+      if (hatched > 0 || contentChanged) {
+        const out = { message: { ...msg, content } }; // carry every mapped rewrite
+        pushedEmitted(joinBlocks(content));
+        return out;
+      }
       return;
     }
+
+    pushedEmitted(joinBlocks(content));
 
     // (3) Reporting: the problem first (what was lost, which region), then the
     //    action (□ fill / restored), then advice; regions get semantic names
