@@ -50,7 +50,7 @@ const MUTATIONS = [
   { name: "M11 流比较失效(恒报丢失)", suites: [1, 2],
     old: "(cp) => !finalText.includes(String.fromCodePoint(cp)),", new: "() => true," },
   { name: "M12 注入不追加", suites: [2],
-    old: "event.systemPrompt +", new: '"" +' },
+    old: "(event.systemPrompt ?? \"\") +", new: '"" +' },
   { name: "M13a 注入无协议名", suites: [2],
     old: "[nerdfont-unescape output protocol]", new: "[protocol]" },
   { name: "M13b 注入无逃生舱说明", suites: [2],
