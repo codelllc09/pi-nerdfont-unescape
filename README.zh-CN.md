@@ -2,31 +2,17 @@
 
 # pi-nerdfont-unescape
 
-让 LLM 的 Nerd Font 图标输出在 Pi TUI 里**无损且可观测**——不让任何字符静默消失。
+Pi TUI 里的 Nerd Font 图标：**进去是转义，出来是字形，而且绝不静默丢失。**
 
-LLM 的 tokenizer 不认识私有区码位（Nerd Font 图标全在此区）。模型试图输出
-它们时，字符被通道无痕丢弃——你看不到任何东西，甚至不知道少了东西。
-本扩展从两个方向绞杀这种静默失败：
+模型的输出通道会直接吞掉 Private Use Area 码位——Nerd Font 图标正好住在那儿。
+模型写了一个图标，你看到的是一片空白，而且没有任何东西告诉你少了什么。
+这个扩展从两头堵这个口子：
 
-- **协议（软约束）**：系统提示附录要求模型把图标写成 ASCII 转义
-  （`\uE235`、`\u{f0805}`）——转义任何 tokenizer 都认识，消息落定时
-  扩展还原成真字形
-- **护栏（硬兜底）**：无论模型怎么做，都不会静默失败
-
-## 功能矩阵
-
-| 功能 | 行为 |
-|---|---|
-| 转义还原 | `\uXXXX` / `\u{xxxxx}` → 真字形（代码段之外） |
-| 代码段保护 | 围栏块**和**行内段（CommonMark 等长定界符，含双反引号包裹）内的转义保持字面——配置文件复制粘贴保真 |
-| 可见替换 | **无可渲染字形**的码位（非字符、Tags、未分配 BMP、不在已配置终端字体链、或字体链状态不可用）→ 可见标记 `□U+FDD0`，绝不隐形 |
-| 证据性补框 | 文本自带码位（Lua 风格 `-- U+E235` 注释）时尾部补 `□`；空引号对永不触碰（合法空串与丢字产物比特级相同，拒绝猜测） |
-| 输入自动转义 | **你发出的消息**里的 at-risk 字符自动转义（输入方向同样被剥）——模型真正收到你贴的内容 |
-| 流级丢失探测 | `message_update` 期间出现过、最终消息里消失的码位，点名报告 |
-| 字体 ground truth | 终端实际字体/回退链 cmap + 签名失效；Linux 自动读取 fontconfig monospace 链，跨平台可用 `PI_NF_FONT_PATHS` 显式指定 |
-| `[[nf:名称]]` 语义标记（beta） | 写 `[[nf:python]]`，扩展按**本机字体**在渲染时解析成图标；未知名可见警告；代码段内保持字面 |
-| `nerdfont_lookup` 工具 | 按关键词/码位查本机 Nerd Font 字形，族别优先，内置 starship 默认表 |
-| `render_preview` 工具 | 等宽网格排版渲染（CJK/Emoji=2 列、PUA=1 列、点线、边框） |
+- **让模型写 ASCII。** 系统提示要求用转义形式（`\uE235`、`\u{f0805}`），
+  这种写法在任何 tokenizer 下都能活；消息落地时扩展把它还原成真字形。
+- **代码里保持字面。** 围栏（含 `> ``` ` 引用围栏）与行内代码段里的转义一律不动，
+  配置片段复制出去仍然可用。
+- **不静默消失。** 没有可渲染字形的字符会变成可见的 `□U+FDD0` 标记，而不是空白。
 
 ## 安装
 
@@ -34,115 +20,85 @@ LLM 的 tokenizer 不认识私有区码位（Nerd Font 图标全在此区）。�
 pi install npm:pi-nerdfont-unescape
 ```
 
-> 尚未发布——首发前可从本地克隆安装：`pi install /path/to/pi-nerdfont-unescape`。
+**没有运行时依赖**：`typebox` 声明为 *peer* 依赖，因为 pi 本来就提供它
+（写成普通依赖会装出第二份，pi 启动时就会告警）。Linux + fontconfig 下无需任何配置。字形 ground truth、`nerdfont_lookup` 与
+`render_preview` 会调用 `python3` + [fontTools](https://fonttools.readthedocs.io/)；
+没装时扩展照常工作，只判定它能判定的部分，并明说哪些查不了——绝不静默。
 
-## 运行与测试依赖
+> 尚未发布到 npm。首次发布前请用：`pi install /path/to/pi-nerdfont-unescape`。
 
-扩展**没有运行时依赖**。`typebox`（pi 本来就提供的 schema 库）声明为 *peer*
-依赖，保证运行时只有一份实例——写成普通依赖会装出第二份，pi 启动时就会告警。字形 ground truth（cmap 缓存）、
-`nerdfont_lookup` 与 `render_preview` 会调用 `python3` + [fontTools]——缺失时可渲染性判定退化为
-类别判断，**可见告警**，绝不静默。测试套件同样依赖。Windows 下未必有名为
-`python3` 的命令，需自行暴露（如 `py -3` 做壳）。
+## 它能做什么
 
-Linux 默认读取 fontconfig 排好序的 `monospace` 回退链。macOS、Windows，或
-终端自定义字体与 fontconfig 不一致时，请将 `PI_NF_FONT_PATHS` 设为实际主字体
-和回退字体文件（也可给目录），多项用平台路径分隔符隔开。无法确认实际字体链
-时，扩展会保守显示 `□U+XXXX`，不会再用无关的已安装字体猜测“支持”。
+| | |
+|---|---|
+| **转义还原** | `\uXXXX` / `\u{xxxxx}` → 真字形（代码区除外） |
+| **代码保护** | 围栏（含引用块里的围栏）与行内代码段；行内按 CommonMark 等长定界符规则，双反引号包裹同样适用 |
+| **可见替换** | noncharacter、Tags 区、未分配 BMP、终端字体链里没有的码位——以及字体链无法识别时——显示为 `□U+XXXX` |
+| **输入侧转义** | **你发出**的消息里的 at-risk 字符在发送前就被转义，模型收到的是你真正打的内容 |
+| **丢字检测** | 流里出现过、最终消息里没有的码位会被点名报告 |
+| **`[[nf:name]]` 语义标记**（beta） | 写语义名，扩展拿**你本机实际安装的字体**去解析；查不到就告警，绝不编造 |
+| **`nerdfont_lookup`** | 按关键字或码位查本机字形，带家族优先级，内置 starship 默认符号 |
+| **`render_preview`** | 等宽网格排版渲染器，带终端宽度算术（CJK/emoji = 2 列，私用区 = 1 列） |
 
-## 测试与视觉验证工作流
+## 配置
 
-`tests/test-nerdfont-unescape.cjs` 与 `test-tools.cjs` 构成全量回归（数量随判例增长），
-含全部历史翻车形态。测试会现场生成一个最小确定性字体，不再依赖开发机装了哪些
-字体；GitHub CI 同时执行回归与变异审计。
+| 变量 | 默认值 | 作用 |
+|---|---|---|
+| `PI_NF_FONT_PATHS` | 未设置——走 fontconfig 有序的 `monospace` 链 | 显式指定字体文件或目录（用平台路径分隔符）。macOS/Windows 或终端字体不是 fontconfig `monospace` 时需要 |
+| `PI_NF_CMAP_CACHE` | `~/.cache/pi-nerdfont-unescape/cmap.json`（macOS：`~/Library/Caches/…`，Windows：`%LOCALAPPDATA%\…`） | 字形缓存位置；可以随时删，下次会话自动重建 |
+| `PI_RENDER_ALLOW_ANY` | 未设置 | 允许 `render_preview` 写到工作目录与 `/tmp` 之外 |
 
-**渲染正确性的最终裁决权在像素**：单测会假绿（套件头注释记录了两种
-成因）。重要改动后：真实输出一条含目标形态的消息 → 截图 → 让视觉
-模型审计**像素**——禁止把提取出的/还原后的文本发给它冒充验证，文本
-验证不了渲染。该工作流抓到过 12 项绿灯单测漏掉的真 bug。
+## 已知边界
 
-会话模型本身能看图 → agent 直接 read 截图即可，不跑脚本（判断零成本：
-试着 read 一张 png，pi 会明说模型支不支持图片）。否则跑
-`python3 tests/vision-verify.py <截图>`。视觉模型**不写死**——解析顺序：
-`PI_VISION_MODEL` / `PI_VISION_BASE_URL` / `PI_VISION_API_KEY` 环境变量 →
-`~/.config/pi-nerdfont-unescape/vision.json` → 兜底默认（`glm-5.3-flash`，
-pi 自带凭证）。任何 OpenAI 兼容端点均可，fork 请用前两级设置自己的模型。
+这些是**有意的**，写出来让你自己判断。
 
+| 边界 | 原因 |
+|---|---|
+| **会话存档里存的是还原后的字符** | `message_end` 同时供给显示与存储，扩展 API 没有"只在绘制时替换"的钩子。后果：模型在自己的历史里看到的是真字形——如果它照抄而不是写转义，通道仍可能吞掉。 |
+| **裸字符被吞掉时无法检测** | 若字符在到达扩展之前就被通道删除，且文本里没有码位线索，那就没有任何信号可依。空引号对永不猜测：`""` 与"少了一个字符"在比特层面完全相同。 |
+| **四空格缩进的代码块不当作代码** | 它与列表续行无法区分，猜错会静默关掉还原。 |
+| **`[[nf:]]` 依赖你本机的字体** | 名字只在真实安装的字体里解析；查不到就明说，绝不用相近字形代替。 |
+| **只处理 assistant 消息** | 用户消息在发出时已转义；在回来时再处理一次会变成二次处理。 |
 
-`npm run test:audit` 用变异审计证明测试不是摆设：每条变异都必须让某个具体用例变红。
-逐条打印耗时与实时 ETA，按 CPU 并行（`--jobs`），每条结论写入
-`/tmp/pi-mutation-journal-<源码哈希>.json`——中断后原样重跑即从断点继续；
-源码一改日志自动失效，续跑不可能报出过期的绿。
-
-```bash
-npm run test:audit -- --only "M6[0-9]" --jobs 4   # 定向切片，几秒出结果
-npm run test:audit -- --fresh                     # 忽略日志从头跑
-npm run test:audit -- --list                      # 只列变异名
-```
-
-所有入口均幂等：临时状态在 `/tmp`，按 pid 或源码哈希命名，进程被 kill 后下次运行自动清扫。
-
-### 无模型 TUI 验收
-
-`scripts/tui-probe/run.sh` 把固定消息渲染进**真实**的 pi TUI 并打印屏幕：
-本地 OpenAI 兼容服务（`fake-openai-server.cjs`）回固定文本，`fake-provider.ts`
-把它注册成一个 provider，pi 跑在 tmux 里，于是 `tmux capture-pane` 能读到
-用户实际看到的画面。
+## 开发
 
 ```bash
-scripts/tui-probe/run.sh            # 打印渲染结果
-CHECK=1 scripts/tui-probe/run.sh    # 对演示消息做断言
+npm test                  # 112 条断言，零模型调用，约 20 秒
+npm run test:audit        # 86 个变异：证明每条断言都会红
+scripts/tui-probe/run.sh  # 真实 TUI + 固定消息，零模型调用
+npm run tui:pixel         # 同一个画面，抓成 PNG
 ```
 
-给要扩展它的人：**绝不要在 tmux 命令里重定向 stdout**——pi 检测到非 TTY 会
-静默降级成纯文本。
-
-`scripts/tui-probe/pixel.sh` 再深一层，抓的是**像素**：GNOME Wayland 没有可脚本化
-的静默截图（Shell 的 D-Bus 方法自 43 起 AccessDenied，portal 每次弹框），Weston 自带
-的 screenshooter 也被拒（`unauthorized`），于是改用 Xvfb——一块虚拟 X 屏幕——在里面
-启动你同款的 WezTerm（软件前端、同一份配置与字体），用同一个假模型驱动，再用
-ImageMagick 抓屏。真实桌面完全不受影响。
+- **测试自带字体夹具**，结果不依赖你机器上装了什么字体；缺 `python3` 会**大声失败**，不静默跳过。
+- **所有套件都跑在 cgroup 上限内**（`scripts/safe-run.sh`：2GB 内存上限，内存不足时拒绝启动）。
+  并行审计曾经把桌面拖崩过，所以审计默认单并发，需要时显式 `--jobs N`。
+- **变异审计可续跑。** 判定写入 `/tmp/pi-mutation-journal-<源码哈希>.json`；源码一改，日志自动失效，
+  续跑不可能报告"过期的绿"。
 
 ```bash
-npm run tui:pixel            # 写出 scripts/tui-probe/out.png
-DROP_PUA=1 scripts/tui-probe/run.sh scripts/tui-probe/message-drop.txt
+npm run test:audit -- --only "M6[0-9]" --jobs 4   # 定向切片
+npm run test:audit -- --fresh                     # 忽略续跑日志
+npm run test:audit -- --list                      # 只列名字
 ```
 
-第二条命令复现的是**起源缺陷**：`DROP_PUA=1` 让假通道表现得像真实的模型输出管道——
-BMP Private Use 字符被静默删除。实测行为：协议写法（`\uE235`）穿过通道并被还原；
-裸 PUA 字符消失且扩展读不到任何线索（已记录的盲区）；而自带码位线索的行
-（`icon lost -- U+E0B0`）会被补上可见的 `□`。
+TUI 探针用本地 OpenAI 兼容服务把固定消息喂进真实界面，不涉及模型、不依赖网络。
+`scripts/tui-probe/run.sh` 从 tmux 读渲染出的屏幕；`scripts/tui-probe/pixel.sh`
+从虚拟 X 屏（Xvfb）抓**像素**——这是唯一能验证"字形真的画出来了"而不只是"码位对了"的办法。
+扩展它们时有两个坑：**绝不要在 tmux 命令里重定向 stdout**（pi 检测到非 TTY 会降级成纯文本），
+以及在虚拟屏上启动终端前**取消 `WAYLAND_DISPLAY`**。
 
-两个踩过的坑：必须 `env -u WAYLAND_DISPLAY`（否则 WezTerm 会开到真实桌面而不是虚拟
-X 屏幕）；必须用 `import -window root -screen`（裸 `-window root` 读的是 root 窗口，
-子窗口位置是黑的）。
+`DROP_PUA=1 scripts/tui-probe/run.sh scripts/tui-probe/message-drop.txt`
+复现起源缺陷：假通道会从输出里删掉私用区字符，于是一屏之内能同时看到三种结局——
+协议转义被还原、裸字符无声消失、自带码位线索（`-- U+E0B0`）被补成可见的 `□`。
 
-### 资源护栏（`npm test` 为什么要包一层）
+## 设计取舍
 
-所有套件都经 `scripts/safe-run.sh` 运行：工作负载被放进独立 cgroup，硬上限
-`MemoryMax=2G` / `MemorySwapMax=512M`，可用内存低于 2GB 时直接拒绝启动。这不是形式
-主义——此前一次并行审计在 15.8GB、已用 21GB swap 的机器上触发了**内核全局 OOM**，
-被杀的是浏览器，桌面会话随之崩溃。有了 cgroup 上限，内核只能杀这个工作负载；变异审计
-的并行度默认降为 **1**（确需并行再显式 `--jobs N`）。临时 scope 随命令退出销毁，
-中断不留残留。
-
-## 边界说明：存档不是 ASCII
-
-`[[nf:]]` 在 `message_end` 解析——这是 pi 扩展唯一的拦截点，而它同时供给
-**显示与存储**。因此会话存档里保存的是还原后的真字符。「存档恒 ASCII、
-仅在绘制边界转字形」需要 pi 核心支持，当前扩展 API 没有这个钩子。
-
-一个值得知道的后果：存档同时是模型的上下文，所以模型在自己的历史里看到的是
-**还原后的字符**。若它照抄而不是写转义形式，通道仍可能把这个字符吞掉——这正是
-用户消息要在发送前转义、协议要求模型写转义的原因。已通过读取真实会话文件验证：
-还原后的字形、`□U+XXXX` 标记、代码区内的字面转义都与显示完全一致地持久化。
-
-## 设计史（浓缩）
-
-源于 2026-09 通道审计（3310 探针、双向验证）：BMP PUA 必丢；其余 at-risk
-区可通过但模型盲发不可靠（PUA 0/3 精度）。2026-10：不可见码位可见替换、
-cmap ground truth、输入侧转义、流级探测、CommonMark v2 行内扫描器
-（v1 正则被双反引号包裹击败——由视觉验证而非测试发现）。
+- **用转义，不用裸字形。** Tokenizer 不认识私用区码位，写字符等于掷硬币；ASCII 转义不是。
+- **什么都不猜。** 字体状态未知时显示 `□U+XXXX`，而不是挑一个像的字形；信号不存在时保持沉默，
+  而不是编一条告警。
+- **通道本身在这里修不了。** 这段代码运行在字节到达之后：它把模型编码过的内容重建出来，
+  并把重建不了的部分显示出来。
 
 ## 许可证
 
-MIT —— 使用需保留版权与许可声明。
+MIT —— 使用时请保留版权与许可证声明。
