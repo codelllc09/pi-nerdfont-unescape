@@ -105,6 +105,11 @@ const CMAP_ASYNC_STATE = Symbol.for("pi.nerdfontUnescape.cmapAsyncState");
 // model message is never byte-identical to a whole emitted message by accident.
 const EMITTED = Symbol.for("pi.nerdfontUnescape.emitted");
 const EMITTED_MAX = 16;
+// Deliberately NOT keyed by the font signature (round 20): after a font change,
+// re-evaluating our own output would turn a hatched literal (`\ue235`, shown
+// with one backslash on purpose) back into a glyph — corruption. Outputs that
+// carry □U+XXXX markers contain no escapes, so re-processing them is a no-op
+// anyway; the guard can stay purely textual.
 function emittedTexts(): string[] {
   const g = globalThis as any;
   if (!Array.isArray(g[EMITTED])) g[EMITTED] = [];
@@ -1039,9 +1044,16 @@ def to_prev(s):
 
 src = [unesc(l[:-1] if l.endswith("\\r") else l) for l in content.split("\\n")]
 
+def split_leader(l):
+    # Split on the LAST tab and neutralise any others: a raw tab left in the
+    # output row breaks terminal alignment (round 20). "a<TAB>b<TAB>c" becomes
+    # left="a b", right="c" — deterministic, no stray tabs.
+    a, _, b = l.rpartition("\t")
+    return a.replace("\t", " "), b.replace("\t", " ")
+
 def lw(l):
     if "\t" in l:
-        a, _, b = l.partition("\t")
+        a, b = split_leader(l)
         return dw(a) + dw(b) + 2
     return dw(l)
 
@@ -1080,7 +1092,7 @@ for l in src:
         rows.append(lc + HR[l.strip()] * W + rc)
         continue
     if "\t" in l:
-        a, _, b = l.partition("\t")
+        a, b = split_leader(l)
         gap = W - dw(a) - dw(b) - 2
         if gap < 3:
             warns.append("dot-leader row too tight (%d cols): %s ... %s" % (gap, a[:20], b[:20]))

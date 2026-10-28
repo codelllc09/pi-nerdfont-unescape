@@ -122,6 +122,11 @@ run(async () => {
     out = await render({ content: "x", frame: "rounded" });
     t("非法边框可见报错", out.startsWith("ERROR: frame"), JSON.stringify(out));
     out = await render({ content: "左段\t右段", width: 20 });
+    // A second tab used to survive into the row and break terminal alignment:
+    // split on the LAST tab, neutralise the rest (round 20).
+    out = await render({ content: "a\tb\tc", width: 14 });
+    const row = out.split("\n")[1] ?? "";
+    t("双TAB行无原始TAB", !row.includes("\t") && row.startsWith("a b") && row.trimEnd().endsWith("c"), JSON.stringify(row));
     t("TAB → 点线行", out.includes("…") || out.includes("·") || /\.{3}/.test(out), JSON.stringify(out.slice(0, 150)));
     out = await render({ content: "标题", frame: "double", width: 10 });
     t("双边框", out.includes("╔") && out.includes("═"), JSON.stringify(out.slice(0, 100)));

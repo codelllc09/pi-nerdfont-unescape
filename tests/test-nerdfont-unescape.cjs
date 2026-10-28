@@ -522,6 +522,22 @@ print("MISMATCH", len(bad), ["%04X" % c for c in bad[:8]] if bad else "OK")
     }
   }
 
+  {
+    // The self-output guard is purely textual ON PURPOSE: coupling it to the
+    // font signature would re-evaluate our own hatched literals after a font
+    // change and restore them into glyphs (round 20 — considered and rejected).
+    const bs = "\\";
+    const first = await end("字面 " + bs + bs + "ue235");
+    const savedSig = globalThis[Symbol.for("pi.nerdfontUnescape.cmapSig")];
+    try {
+      globalThis[Symbol.for("pi.nerdfontUnescape.cmapSig")] = "__font_changed__";
+      const again = await end(first);
+      t("签名变化不解除自我输出保护", again === first, JSON.stringify(again));
+    } finally {
+      globalThis[Symbol.for("pi.nerdfontUnescape.cmapSig")] = savedSig;
+    }
+  }
+
   console.log("── ㉒ 重复处理幂等（双重注册 / reload 残留）");
   {
     // The hatch form `\\ue235` displays as a single-backslash literal; feeding
