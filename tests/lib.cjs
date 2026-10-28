@@ -40,6 +40,18 @@ function piRoot() {
 
 /** Build a tiny deterministic font so tests never depend on the workstation's
  * active terminal font, filename conventions, or installed Nerd Font version. */
+function ensureTestCache() {
+  // NEVER touch the production cache from a test or an ad-hoc probe: a probe
+  // without PI_NF_CMAP_CACHE once rebuilt the user's real cmap.json from the
+  // 2-font fixture, silently shrinking it from 932 ranges to 11 (round 19).
+  // PI_NF_TEST_USE_REAL_CACHE=1 is the deliberate escape hatch.
+  if (process.env.PI_NF_TEST_USE_REAL_CACHE === "1") return;
+  if (process.env.PI_NF_CMAP_CACHE) return; // explicit isolated path already
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-nf-testcache-"));
+  process.env.PI_NF_CMAP_CACHE = path.join(dir, "cmap.json");
+  process.on("exit", () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} });
+}
+
 function ensureFixtureFont() {
   // Deterministic by default: a developer's real PI_NF_FONT_PATHS must not
   // silently change the fixtures under test. PI_NF_TEST_REAL_FONTS=1 opts out
@@ -52,9 +64,9 @@ function ensureFixtureFont() {
     ensureFixtureFont.cleaned = true;
     process.on("exit", () => { try { fs.rmSync(parent, { recursive: true, force: true }); } catch {} });
   }
-  const fontPath = path.join(parent, "fixture-main-v4.ttf");
-  const altPath = path.join(parent, "fixture-alt-v4.ttf");
-  if (!fs.existsSync(altPath)) {
+  const fontPath = path.join(parent, "fixture-main-v5.ttf");
+  const altPath = path.join(parent, "fixture-alt-v5.ttf");
+  if (!fs.existsSync(altPath) || !fs.existsSync(path.join(parent, "fixture-coll-v5.ttc"))) {
     const script = String.raw`
 from fontTools.fontBuilder import FontBuilder
 from fontTools.pens.ttGlyphPen import TTGlyphPen
@@ -113,6 +125,39 @@ fb.setupPost(); fb.setupMaxp(); fb.save(sys.argv[1])
     if (r.status !== 0) throw new Error(`failed to build test font fixture: ${(r.stderr || r.stdout).trim()}`);
     const ra = spawnSync("python3", ["-c", altScript, altPath], { encoding: "utf8" });
     if (ra.status !== 0) throw new Error(`failed to build alt fixture: ${(ra.stderr || ra.stdout).trim()}`);
+    // A real TTC: its faces SHARE one file handle, which is exactly the shape
+    // that broke (closing a face killed the rest). Face 0 owns E900, face 1 E901.
+    const ttcScript = String.raw`
+from fontTools.fontBuilder import FontBuilder
+from fontTools.pens.ttGlyphPen import TTGlyphPen
+from fontTools.ttLib import TTCollection, TTFont
+import os, sys, tempfile
+
+def build(path, cp, name):
+    order = [".notdef", name]
+    fb = FontBuilder(1000, isTTF=True)
+    fb.setupGlyphOrder(order)
+    fb.setupCharacterMap({cp: name})
+    glyphs = {}
+    for g in order:
+        pen = TTGlyphPen(None)
+        if g != ".notdef":
+            pen.moveTo((100, 100)); pen.lineTo((900, 100)); pen.lineTo((900, 900)); pen.lineTo((100, 900)); pen.closePath()
+        glyphs[g] = pen.glyph()
+    fb.setupGlyf(glyphs)
+    fb.setupHorizontalMetrics({g: (1000, 0) for g in order})
+    fb.setupHorizontalHeader(ascent=900, descent=-100)
+    fb.setupOS2(sTypoAscender=900, sTypoDescender=-100, usWinAscent=900, usWinDescent=100)
+    fb.setupNameTable({"familyName": "Pi TTC " + name, "styleName": "Regular", "uniqueFontIdentifier": "PiTTC" + name, "fullName": "Pi TTC " + name, "psName": "PiTTC-" + name})
+    fb.setupPost(); fb.setupMaxp(); fb.save(path)
+
+d = tempfile.mkdtemp()
+a, b = os.path.join(d, "f1.ttf"), os.path.join(d, "f2.ttf")
+build(a, 0xE900, "ttc-face0"); build(b, 0xE901, "ttc-face1")
+coll = TTCollection(); coll.fonts = [TTFont(a), TTFont(b)]; coll.save(sys.argv[1])
+`;
+    const rtc = spawnSync("python3", ["-c", ttcScript, path.join(parent, "fixture-coll-v5.ttc")], { encoding: "utf8" });
+    if (rtc.status !== 0) throw new Error(`failed to build ttc fixture: ${(rtc.stderr || rtc.stdout).trim()}`);
   }
   // A DIRECTORY: also exercises recursive expansion + multi-font union
   process.env.PI_NF_FONT_PATHS = parent;
@@ -123,6 +168,7 @@ function extPath() {
 }
 
 function jitiLoad() {
+  ensureTestCache();
   ensureFixtureFont();
   const D = piRoot();
   const { createJiti } = require(path.join(D, "node_modules/jiti/lib/jiti.mjs"));

@@ -392,6 +392,12 @@ const t = (name, ok, detail = "") => {
         const meta = JSON.parse(fs.readFileSync(P, "utf8"));
         const hasAlt = (meta.ranges || []).some(([lo, hi]) => lo <= 0xe777 && 0xe777 <= hi);
         t("重建缓存记录字体链来源", meta.schema === 2 && meta.source === "explicit" && meta.fonts >= 2 && hasAlt, JSON.stringify(meta).slice(0, 160));
+        // A .ttc holds several faces behind ONE file handle. Closing a face
+        // closed that handle, so later faces lost their cmaps ("seek of closed
+        // file") silently. Fixture: face 0 owns E900, face 1 owns E901 — only a
+        // REAL rebuild exercises the enumeration, hence this lives here.
+        const covers = (cp) => (meta.ranges || []).some(([lo, hi]) => lo <= cp && cp <= hi);
+        t("TTC全face进入缓存", covers(0xe900) && covers(0xe901), `E900=${covers(0xe900)} E901=${covers(0xe901)}`);
       }
       t("并发重建去重", builds === 1, `builds=${builds}`);
       globalThis[SIGK] = "__tampered__"; // 篡改 → reload 必须靠真实字体签名核验纠正

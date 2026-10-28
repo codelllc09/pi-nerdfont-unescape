@@ -179,11 +179,23 @@ try:
     from fontTools.ttLib import TTCollection, TTFont
     for p in fonts:
         try:
-            faces = TTCollection(p, lazy=True).fonts if p.lower().endswith(".ttc") else [TTFont(p, lazy=True)]
-            for face in faces:
-                cmap = face.getBestCmap() or {}
-                cps.update(cmap.keys())
-                face.close()
+            if p.lower().endswith(".ttc"):
+                # TTCollection faces SHARE one file handle: closing a face closes
+                # the handle for the rest and every later face dies with "seek of
+                # closed file", silently dropping its glyphs (round 19). Read all
+                # cmaps first, then close the collection once.
+                coll = TTCollection(p, lazy=True)
+                try:
+                    for face in coll.fonts:
+                        cps.update((face.getBestCmap() or {}).keys())
+                finally:
+                    coll.close()
+            else:
+                face = TTFont(p, lazy=True)
+                try:
+                    cps.update((face.getBestCmap() or {}).keys())
+                finally:
+                    face.close()
         except Exception as e:
             print("font skipped %s: %s" % (p, e), file=sys.stderr)
 except ImportError:
@@ -818,14 +830,29 @@ if fonts:
         seen_icons = set()
         for path in fonts:
             try:
-                faces = TTCollection(path, lazy=True).fonts if path.lower().endswith(".ttc") else [TTFont(path, lazy=True)]
-                for face in faces:
-                    for cp, nm in (face.getBestCmap() or {}).items():
-                        all_names.setdefault(cp, set()).add(nm)
-                        if icon_cp(cp) and (cp, nm) not in seen_icons:
-                            icons.append((cp, nm))
-                            seen_icons.add((cp, nm))
-                    face.close()
+                if path.lower().endswith(".ttc"):
+                    # shared file handle: close the collection, never a single face
+                    coll = TTCollection(path, lazy=True)
+                    try:
+                        faces = list(coll.fonts)
+                        for face in faces:
+                            for cp, nm in (face.getBestCmap() or {}).items():
+                                all_names.setdefault(cp, set()).add(nm)
+                                if icon_cp(cp) and (cp, nm) not in seen_icons:
+                                    icons.append((cp, nm))
+                                    seen_icons.add((cp, nm))
+                    finally:
+                        coll.close()
+                else:
+                    face = TTFont(path, lazy=True)
+                    try:
+                        for cp, nm in (face.getBestCmap() or {}).items():
+                            all_names.setdefault(cp, set()).add(nm)
+                            if icon_cp(cp) and (cp, nm) not in seen_icons:
+                                icons.append((cp, nm))
+                                seen_icons.add((cp, nm))
+                    finally:
+                        face.close()
             except Exception:
                 pass
     except ImportError:

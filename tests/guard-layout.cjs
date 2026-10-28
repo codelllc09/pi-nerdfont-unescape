@@ -28,11 +28,16 @@ const audit = T("mutation-audit.cjs");
 const review = T("gen-review.cjs");
 
 // 1) 身份标记：每个文件都有自己独有的头部与结构
-check("套件是回归套件", suite.includes("test-nerdfont-unescape.cjs — ") && suite.includes("const t = (name"), "缺套件头部或 t()");
-check("套件不包含审计驱动", !suite.includes("const MUTATIONS") && !suite.includes("runSuiteAsync"), "套件里出现了审计代码");
-check("审计是变异审计", audit.includes("mutation-audit.cjs — ") && audit.includes("const MUTATIONS"), "缺审计头部或 MUTATIONS");
-check("审计不包含回归套件", !audit.includes("const t = (name"), "审计里出现了套件代码");
-check("工具套件是它自己", tools.includes("test-tools.cjs — ") && tools.includes("const t = (name"), "缺工具套件头部");
+// Discriminators must be code, not prose: the audit legitimately mentions
+// "const t = (name" inside its own identity preflight (a string literal), so a
+// naive substring rule false-positives on itself (round 19).
+const SUITE_CODE = 'require("./lib.cjs").jitiLoad()'; // only the suites load the extension like this
+const AUDIT_CODE = "const MUTATIONS = ["; // only the audit declares the table
+check("套件是回归套件", suite.includes("test-nerdfont-unescape.cjs — ") && suite.includes(SUITE_CODE), "缺套件头部或 lib 加载");
+check("套件不包含审计驱动", !suite.includes(AUDIT_CODE) && !suite.includes("function runSuiteAsync"), "套件里出现了审计代码");
+check("审计是变异审计", audit.includes("mutation-audit.cjs — ") && audit.includes(AUDIT_CODE), "缺审计头部或 MUTATIONS");
+check("审计不包含回归套件", !audit.includes(SUITE_CODE), "审计里出现了套件代码");
+check("工具套件是它自己", tools.includes("test-tools.cjs — ") && tools.includes(SUITE_CODE), "缺工具套件头部");
 check("审查页生成器是它自己", review.includes("gen-review.cjs") && review.includes("const CASES"), "缺 gen-review 结构");
 
 // 2) 互不相同的关切点必须各在一处（防止"复制粘贴式孪生"）
