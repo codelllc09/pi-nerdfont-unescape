@@ -10,3 +10,6 @@ scripts/tui-probe/out.png
 
 # dependencies (installed by npm install / CI)
 node_modules/
+
+# lockfile: this is a library; CI resolves peers fresh (same as consumers)
+package-lock.json

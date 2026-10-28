@@ -28,6 +28,7 @@ WORK=$(mktemp -d /tmp/tui-pixel-XXXXXX)
 
 command -v Xvfb >/dev/null || { echo "需要 Xvfb：sudo dnf install -y xorg-x11-server-Xvfb" >&2; exit 2; }
 command -v import >/dev/null || { echo "需要 ImageMagick 的 import" >&2; exit 2; }
+command -v xdpyinfo >/dev/null || { echo "需要 xdpyinfo（就绪探测用）：sudo dnf install -y xorg-x11-utils" >&2; exit 2; }
 
 # Only ever kill what this script started, and kill it as a process GROUP.
 # WezTerm forks a wezterm-gui child, so killing the launcher alone leaves the GUI

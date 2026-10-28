@@ -70,6 +70,11 @@ check("lib: 导出 resolveEntry 供套件复用", /module\.exports\s*=\s*\{[^}]*
   const os = require("os");
   const pth = require("path");
   const { sweepStaleTempDirs } = require("./lib.cjs");
+  // Isolate from the caller's environment: an exported PI_NF_NO_SWEEP=1 (a
+  // reasonable thing to set while running the audit by hand) used to turn this
+  // assertion red with no hint why. The guard must test the code, not the shell.
+  const savedNoSweep = process.env.PI_NF_NO_SWEEP;
+  delete process.env.PI_NF_NO_SWEEP;
   const stale = fs.mkdtempSync(pth.join(os.tmpdir(), "pi-nf-test-"));
   const fresh = fs.mkdtempSync(pth.join(os.tmpdir(), "pi-nf-test-"));
   const threeHoursAgo = new Date(Date.now() - 3 * 3600 * 1000);
@@ -78,6 +83,7 @@ check("lib: 导出 resolveEntry 供套件复用", /module\.exports\s*=\s*\{[^}]*
   check("清扫删除过期临时目录（SIGKILL 残留）", !fs.existsSync(stale));
   check("清扫保留新鲜临时目录（不动在跑的任务）", fs.existsSync(fresh));
   fs.rmSync(fresh, { recursive: true, force: true });
+  if (savedNoSweep !== undefined) process.env.PI_NF_NO_SWEEP = savedNoSweep;
 }
 
 // 6) 视觉验证脚本的默认提示词必须完整：它曾在一处编辑中被截断成从半句开始，
