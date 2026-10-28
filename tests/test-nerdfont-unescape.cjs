@@ -96,6 +96,18 @@ const t = (name, ok, detail = "") => {
   t("跨行同码位不压制", (a.split("\n")[1] ?? "").includes("-- U+E235 □"), JSON.stringify(a));
   a = await end("icon \\ue235 same line: -- U+E235");
   t("同段同码位仍压制", !a.includes("□"), JSON.stringify(a));
+  // 可见替代标记=已处置：转义已抵达、仅字体状态未知，不是模型丢失（第十一轮外部评审）
+  {
+    const CSTK3 = Symbol.for("pi.nerdfontUnescape.cmap");
+    const saved3 = globalThis[CSTK3];
+    delete globalThis[CSTK3];
+    notes.length = 0;
+    a = await end("icon \\ue235 same line: -- U+E235");
+    globalThis[CSTK3] = saved3;
+    t("未知字体标记不重复处置", (a.match(/□/g) ?? []).length === 1 && !notes.some((n) => n.includes("likely dropped")), JSON.stringify(a) + "|" + notes.join(";"));
+  }
+  a = await end("icon \\ue5ee same line: -- U+E5EE");
+  t("已知缺字标记不重复处置", (a.match(/□/g) ?? []).length === 1 && !a.includes("-- U+E5EE □"), JSON.stringify(a));
   a = await end("icon lost: -- U+100000");
   t("六位码位注释补框", a.includes("-- U+100000 □"), JSON.stringify(a));
   a = await end("icon lost: -- U+E235");

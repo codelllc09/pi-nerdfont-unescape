@@ -630,11 +630,13 @@ function tofuFill(text: string): { text: string; filled: number; cps: number[] }
       if (cp === null || cp > 0x10ffff) return m; // beyond the codespace: not our trace
       if (!isAtRisk(cp)) return m; // e.g. U+0041 'A': a safe codepoint, nothing was dropped
       // Compliance check scoped to THIS segment: an already-restored escape
-      // on the same line means nothing was lost here. Searching the whole
-      // message once suppressed genuine loss traces — a codepoint present in
-      // an unrelated line/fence must NOT silence an explicit "-- U+XXXX lost"
-      // comment elsewhere (review round 11)
-      if (seg.includes(String.fromCodePoint(cp))) return m;
+      // on the same line means nothing was lost here — and so does a visible
+      // substitution marker (□U+XXXX): the escape ARRIVED, only the font
+      // state was unknown/missing; that is not a model drop and must not be
+      // filled or reported twice (review round 12). Searching the whole
+      // message, round 11 taught us, silences genuine traces elsewhere.
+      const marker = `${TOFU}U+${cp.toString(16).toUpperCase().padStart(4, "0")}`;
+      if (seg.includes(String.fromCodePoint(cp)) || seg.includes(marker)) return m;
       filled++;
       cps.push(cp);
       return m + " " + TOFU;
