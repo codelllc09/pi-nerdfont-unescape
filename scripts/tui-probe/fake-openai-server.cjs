@@ -8,7 +8,17 @@ const path = require("path");
 const file = process.argv[2] || path.join(__dirname, "message.txt");
 // The message keeps its escapes as TEXT: that is the input the extension under
 // test must post-process (a real model writes exactly this shape).
-const CONTENT = fs.readFileSync(file, "utf8").replace(/\n$/, "");
+let CONTENT = fs.readFileSync(file, "utf8").replace(/\n$/, "");
+// DROP_PUA=1 makes this server behave like the real model channel: BMP Private
+// Use characters are silently REMOVED from the output (not mis-rendered). That
+// is the defect this extension exists for, so the probe can reproduce it:
+//   * protocol-compliant output (ASCII escapes) survives untouched;
+//   * a raw PUA character vanishes and the extension cannot see it at all.
+if (process.env.DROP_PUA === "1") {
+  const before = CONTENT.length;
+  CONTENT = CONTENT.replace(/[\uE000-\uF8FF]/g, "");
+  console.error(`tui-probe: channel dropped ${before - CONTENT.length} PUA char(s)`);
+}
 const PORT = Number(process.env.TUI_PROBE_PORT || 8787);
 
 http

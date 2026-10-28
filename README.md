@@ -104,7 +104,15 @@ the screen with ImageMagick. Nothing appears on the real desktop.
 
 ```bash
 npm run tui:pixel            # writes scripts/tui-probe/out.png
+DROP_PUA=1 scripts/tui-probe/run.sh scripts/tui-probe/message-drop.txt
 ```
+
+The second command is the one that reproduces the *origin* defect: `DROP_PUA=1`
+makes the fake channel behave like a real model output pipe — BMP Private Use
+characters are silently removed. Observed behaviour: the protocol form
+(`\uE235`) passes through and is restored, a raw PUA character is gone without a
+trace the extension could read (documented limit), and a line that names the
+codepoint (`icon lost -- U+E0B0`) gets a visible □ appended.
 
 Two traps learned the hard way: unset `WAYLAND_DISPLAY` (otherwise WezTerm opens on
 the real desktop instead of the virtual X screen) and capture with
