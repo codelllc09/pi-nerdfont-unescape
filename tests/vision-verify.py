@@ -98,6 +98,14 @@ def candidate_chain():
         chain.append(merged)
     if base and base.get("model") != merged.get("model"):
         chain.append(base)
+    # 机器第二兜底：flash 系 reasoning 间歇性耗尽 max_tokens（多轮实测），
+    # 同端点挂 4.6v 兜底避免单点
+    backup = dict(base or {})
+    if base:
+        backup["model"] = "glm-4.6v"
+        if backup.get("model") != merged.get("model") and backup["model"] != base["model"] or True:
+            if backup["model"] != merged.get("model"):
+                chain.append(backup)
     return chain
 
 
