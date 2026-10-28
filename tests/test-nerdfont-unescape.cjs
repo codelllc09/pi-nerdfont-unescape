@@ -241,6 +241,14 @@ const t = (name, ok, detail = "") => {
 
   console.log("── ⑮ [[nf:]] 健壮性（缓存与语法）");
   {
+    // A loose SUBSTRING hit on an ordinary glyph must not read as "the name
+    // exists": name the matched glyph so the warning is self-explanatory.
+    notes.length = 0;
+    a = await end("[[nf:lph]]");
+    const w = notes.find((n) => n.includes("[[nf:")) ?? "";
+    t("子串命中也点名字形", a.includes("[[nf:lph]]") && w.includes("U+03B1") && w.includes('"alpha"'), w.slice(0, 140));
+  }
+  {
     notes.length = 0;
     a = await end("[[nf:alpha]] 与 [[nf:special]]");
     const w = notes.find((n) => n.includes("alpha")) ?? "";

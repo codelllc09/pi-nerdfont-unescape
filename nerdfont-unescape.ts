@@ -103,6 +103,8 @@ const CMAP_ASYNC_STATE = Symbol.for("pi.nerdfontUnescape.cmapAsyncState");
 // literal that a second pass would happily restore into a glyph, corrupting a
 // deliberate literal (round 17). Bounded FIFO, exact match only — a genuine
 // model message is never byte-identical to a whole emitted message by accident.
+// name → glyph name for non-icon resolutions (message honesty; cleared with NF_CACHE)
+const NON_ICON_MATCH = new Map<string, string>();
 const EMITTED = Symbol.for("pi.nerdfontUnescape.emitted");
 const EMITTED_MAX = 16;
 // Deliberately NOT keyed by the font signature (round 20): after a font change,
@@ -438,7 +440,7 @@ async function resolveNfMarkers(text: string, notify?: (msg: string, level: stri
     });
     if (out === "") resolverUnavailable = true;
     for (const line of out.split("\n")) {
-      const m = line.match(/^([a-z0-9_.-]+) (~?[0-9a-f]+|\?)$/i); // ~hex = named but non-icon
+      const m = line.match(/^([a-z0-9_.-]+) (~?[0-9a-f]+|\?)(?:\s+(\S+))?$/i); // ~hex [matchedGlyph] = named but non-icon
       if (!m) continue;
       // "~hex" = the name exists but resolves to a non-icon codepoint. Cache it
       // as a negative number: still a cached answer (no repeat python call),
@@ -449,6 +451,7 @@ async function resolveNfMarkers(text: string, notify?: (msg: string, level: stri
       // Anything else would become a literal \uXXXX that the restore pipeline
       // intentionally leaves alone (silent failure).
       cache.set(m[1].toLowerCase(), cp === null ? null : isAtRisk(cp) ? cp : -cp);
+      if (nonIcon && m[3]) NON_ICON_MATCH.set(m[1].toLowerCase(), m[3]);
     }
     for (const n of uncached) if (!cache.has(n)) cache.set(n, null);
   }
@@ -467,9 +470,10 @@ async function resolveNfMarkers(text: string, notify?: (msg: string, level: stri
         return whole; // unresolved: keep the marker + name it in a warning, never silent
       }
       if (cp < 0) {
-        // Named glyph exists, but outside the icon planes: keep the marker and
-        // say exactly why (NOT "no such name" — that would be a lie)
-        const tag = `${k} (U+${(-cp).toString(16).toUpperCase().padStart(4, "0")})`;
+        // A non-icon glyph matched (exact or, worse, a loose substring). Name the
+        // glyph so "exists" cannot be misread as "your name is valid".
+        const hit = NON_ICON_MATCH.get(k);
+        const tag = `${k} → U+${(-cp).toString(16).toUpperCase().padStart(4, "0")}${hit ? ` "${hit}"` : ""}`;
         if (!nonIcon.includes(tag)) nonIcon.push(tag);
         return whole;
       }
@@ -484,7 +488,7 @@ async function resolveNfMarkers(text: string, notify?: (msg: string, level: stri
   }
   if (nonIcon.length > 0) {
     notify?.(
-      `nerdfont-unescape: [[nf:...]] name exists but resolves outside the icon planes: ${nonIcon.join(", ")}; marker kept verbatim ([[nf:]] only carries Nerd Font icon codepoints)`,
+      `nerdfont-unescape: [[nf:...]] matched a non-icon glyph: ${nonIcon.join(", ")}; marker kept verbatim ([[nf:]] only carries Nerd Font icon codepoints)`,
       "warning",
     );
   }
@@ -943,11 +947,14 @@ if q.startswith("resolve:"):
         # The name may exist in the font chain as an ordinary (non-PUA) glyph.
         # Reporting "no such name" there would be false; report it precisely so
         # the client can say "resolves to U+XXXX, not an icon codepoint".
-        plain = [(famrank(nm), cp) for cp, vals in all_names.items() for nm in vals if nm.lower() == target]
+        plain = [(famrank(nm), cp, nm) for cp, vals in all_names.items() for nm in vals if nm.lower() == target]
         if not plain:
-            plain = [(famrank(nm), cp) for cp, vals in all_names.items() for nm in vals if target in nm.lower()]
+            plain = [(famrank(nm), cp, nm) for cp, vals in all_names.items() for nm in vals if target in nm.lower()]
         if plain:
-            print("%s ~%x" % (name, min(plain)[1]))
+            best = min(plain)
+            # Report WHICH glyph matched: a loose substring hit on an ordinary
+            # symbol is a different story from "the name exists" (round 23).
+            print("%s ~%x %s" % (name, best[1], best[2]))
         else:
             print("%s ?" % name)
     sys.exit(0)
