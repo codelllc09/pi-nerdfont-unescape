@@ -39,17 +39,44 @@ cleanup() {
   [ -n "${WEZ:-}" ] && kill -TERM -- "-$WEZ" 2>/dev/null || true
   [ -n "${SRV:-}" ] && kill "$SRV" 2>/dev/null || true
   [ -n "${WPID:-}" ] && kill "$WPID" 2>/dev/null || true
-  rm -rf "$WORK"
+  # Keep the work dir when the run failed before producing anything: deleting the
+  # only copy of the logs is how "three empty logs" happened.
+  if [ "${KEEP_WORK:-0}" = "1" ]; then
+    echo "work dir kept: $WORK" >&2
+  else
+    rm -rf "$WORK"
+  fi
 }
 trap cleanup EXIT
 
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 export TUI_PROBE_PORT=$PORT
 
+# Pick a free display instead of always :99: a leftover X server from an earlier
+# run made the first attempt fail with three empty logs (the failure path then
+# deleted $WORK, so there was nothing to read). Now: reuse only if free, wait for
+# readiness, and print the server log on failure before anything is cleaned up.
+if [ -z "${DISPLAY_NUM:-}" ]; then
+  for n in $(seq 90 140); do [ -e "/tmp/.X11-unix/X$n" ] || { DISPLAY_NUM=$n; break; }; done
+fi
 DISPLAY_NUM=${DISPLAY_NUM:-99}
+if [ -e "/tmp/.X11-unix/X$DISPLAY_NUM" ] && xdpyinfo -display ":$DISPLAY_NUM" >/dev/null 2>&1; then
+  echo "display :$DISPLAY_NUM is already in use; set DISPLAY_NUM to a free one" >&2
+  exit 2
+fi
 node "$ROOT/scripts/tui-probe/fake-openai-server.cjs" "$MSG" 2>"$WORK/server.err" & SRV=$!
 Xvfb ":$DISPLAY_NUM" -screen 0 "${WIDTH}x${HEIGHT}x24" -nolisten tcp >"$WORK/xvfb.log" 2>&1 & WPID=$!
-sleep 2
+ready=0
+for _ in $(seq 1 50); do
+  if xdpyinfo -display ":$DISPLAY_NUM" >/dev/null 2>&1; then ready=1; break; fi
+  sleep 0.2
+done
+if [ "$ready" != "1" ]; then
+  echo "✗ Xvfb did not come up on :$DISPLAY_NUM — log follows (work dir kept: $WORK)" >&2
+  cat "$WORK/xvfb.log" >&2
+  KEEP=1; KEEP_WORK=1
+  exit 1
+fi
 
 # Same terminal, same config as the user's session (WezTerm reads the user's
 # config, so fonts and fallbacks match); software rendering because the virtual
