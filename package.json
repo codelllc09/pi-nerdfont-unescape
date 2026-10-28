@@ -47,7 +47,8 @@
 		"LICENSE",
 		"tests/",
 		"!tests/__pycache__",
-		"scripts/"
+		"scripts/",
+		"!scripts/tui-probe/out.png"
 	],
 	"engines": {
 		"node": ">=22"

@@ -208,6 +208,50 @@ run(async () => {
   await handlers["message_end"]({ message: { role: "assistant", content: [{ type: "text", text: "回" }] } }, ctx);
   t("user 流不触发误报", !notes.some((n) => n.m.includes("MISSING")), JSON.stringify(notes.map((n) => n.m)));
 
+  // 回归（终极 review）：PI_CODING_AGENT_DIR 是 pi 官方文档里的**配置目录**变量
+  // （默认 ~/.pi/agent）。曾把它当"pi 安装目录"用，导致任何按文档设置该变量的
+  // 用户跑 `npm test` 直接抛 "has no dist/index.js — wrong path?"。现在只认
+  // PI_NF_PI_ROOT；官方变量存在时必须被忽略。
+  {
+    const lib = require("./lib.cjs");
+    const fs = require("fs"), path = require("path");
+    const savedCfg = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = "/nonexistent/pi-agent-config";
+    let root = null, err = null;
+    try { root = lib.piRoot(); } catch (e) { err = e.message; }
+    t("官方配置变量 PI_CODING_AGENT_DIR 不影响安装目录解析",
+      !err && !!root && fs.existsSync(path.join(root, "dist/index.js")),
+      err || String(root));
+    if (savedCfg === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = savedCfg;
+
+    const savedRoot = process.env.PI_NF_PI_ROOT;
+    process.env.PI_NF_PI_ROOT = "/nonexistent/pi-root";
+    let threw = false;
+    try { lib.piRoot(); } catch (e) { threw = /PI_NF_PI_ROOT/.test(e.message); }
+    t("PI_NF_PI_ROOT 无效时点名报错（不静默回退）", threw);
+    if (savedRoot === undefined) delete process.env.PI_NF_PI_ROOT;
+    else process.env.PI_NF_PI_ROOT = savedRoot;
+  }
+
+  // 回归（终极 review）：曾硬编码「jiti 嵌套在 pi 目录内」，而 `npm install`
+  // 会把依赖提升到项目根 → 干净克隆的 CI 第一条命令就炸。断言：在**当前**
+  // 布局下解析必须成功，且解析结果真实存在。
+  {
+    const lib = require("./lib.cjs");
+    const fs = require("fs");
+    let jiti = null, err = null;
+    try { jiti = lib.resolveEntry("jiti", lib.piRoot()); } catch (e) { err = e.message; }
+    t("jiti 通过解析获得（适配 hoist/嵌套两种布局）",
+      !err && !!jiti && fs.existsSync(jiti), err || String(jiti));
+    // 匹配**代码形态**而非路径字符串：第一版断言命中的是我自己解释性注释里的
+    // 路径（陷阱家族 #8 的又一面——子串断言必须排除注释/文档文本）。
+    const src = fs.readFileSync(require("path").join(__dirname, "lib.cjs"), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    t("lib.cjs 不硬编码嵌套依赖路径（改为解析）",
+      !/path\.join\(\s*D\s*,\s*"node_modules\//.test(src));
+  }
+
   console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
   process.exit(fail ? 1 : 0);
 });

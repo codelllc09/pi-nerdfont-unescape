@@ -3,7 +3,9 @@
  *
  * Portability (GPT review 2026-10-28: tests must not hardcode user/version
  * paths). Resolution order:
- *   1. env PI_CODING_AGENT_DIR (explicit)
+ *   1. env PI_NF_PI_ROOT (explicit) — NOT PI_CODING_AGENT_DIR: that name is
+ *      pi's documented CONFIG dir (~/.pi/agent), so reusing it made the suite
+ *      abort for anyone who follows the docs (final review, 2026-10-29)
  *   2. ~/.local/share/pi-node/current (stable symlink maintained by pi update)
  *   3. node-v* version dirs under pi-node, newest first (phrased to avoid an
  *      early "star slash" comment close — trap-family case #5)
@@ -15,11 +17,11 @@ const path = require("path");
 const { spawnSync } = require("child_process");
 
 function piRoot() {
-  if (process.env.PI_CODING_AGENT_DIR) {
-    const p = process.env.PI_CODING_AGENT_DIR;
+  if (process.env.PI_NF_PI_ROOT) {
+    const p = process.env.PI_NF_PI_ROOT;
     const fs2 = require("fs");
     if (!fs2.existsSync(require("path").join(p, "dist/index.js"))) {
-      throw new Error(`PI_CODING_AGENT_DIR (${p}) has no dist/index.js — wrong path?`);
+      throw new Error(`PI_NF_PI_ROOT (${p}) has no dist/index.js — wrong path?`);
     }
     return p;
   }
@@ -35,7 +37,7 @@ function piRoot() {
   for (const c of candidates) {
     if (fs.existsSync(path.join(c, "dist/index.js"))) return c;
   }
-  throw new Error("pi-coding-agent install dir not found; export PI_CODING_AGENT_DIR=/path/to/pi-coding-agent");
+  throw new Error("pi-coding-agent install dir not found; export PI_NF_PI_ROOT=/path/to/pi-coding-agent");
 }
 
 /** Build a tiny deterministic font so tests never depend on the workstation's
@@ -167,21 +169,50 @@ function extPath() {
   return process.env.EXT_PATH || path.join(__dirname, "..", "nerdfont-unescape.ts");
 }
 
+/**
+ * Resolve a package entry the portable way: ask Node, from several anchors.
+ *
+ * Hardcoding `path.join(D, "node_modules/jiti/lib/jiti.mjs")` assumed the local
+ * pi layout (deps nested under the pi package). `npm install` hoists deps to the
+ * project root instead, so a clean clone failed with
+ *   Cannot find module '.../pi-coding-agent/node_modules/jiti/lib/jiti.mjs'
+ * — i.e. the package's own CI would have gone red on its first push
+ * (final review, 2026-10-29). Anchors: this file, the pi install, the project.
+ */
+function resolveEntry(id, D) {
+  const { createRequire } = require("module");
+  const anchors = [
+    path.join(__dirname, "noop.js"),
+    path.join(path.dirname(__dirname), "noop.js"),
+    path.join(D, "noop.js"),
+  ];
+  for (const a of anchors) {
+    try {
+      return createRequire(a).resolve(id);
+    } catch {}
+  }
+  return null;
+}
+
 function jitiLoad() {
   ensureTestCache();
   ensureFixtureFont();
   const D = piRoot();
-  const { createJiti } = require(path.join(D, "node_modules/jiti/lib/jiti.mjs"));
-  const load = createJiti(__filename, {
-    interopDefault: true,
-    alias: {
-      "@earendil-works/pi-ai": path.join(D, "node_modules/@earendil-works/pi-ai/dist"),
-      "@earendil-works/pi-coding-agent": path.join(D, "dist/index.js"),
-      "@earendil-works/pi-tui": path.join(D, "node_modules/@earendil-works/pi-tui/dist/index.js"),
-      typebox: path.join(D, "node_modules/typebox/build/index.mjs"),
-    },
-  });
+  const jitiEntry = resolveEntry("jiti", D);
+  if (!jitiEntry) {
+    throw new Error("jiti not found — npm install (the pi package depends on it) or set PI_NF_PI_ROOT");
+  }
+  const { createJiti } = require(jitiEntry);
+  // Alias only what actually resolves. A path that does not exist here means a
+  // different install layout, not a bug; unresolved ids fall through to jiti's
+  // normal resolution instead of pointing at a missing file.
+  const alias = {};
+  for (const id of ["typebox", "@earendil-works/pi-coding-agent", "@earendil-works/pi-ai", "@earendil-works/pi-tui"]) {
+    const hit = resolveEntry(id, D);
+    if (hit) alias[id] = hit;
+  }
+  const load = createJiti(__filename, { interopDefault: true, alias });
   return load(extPath());
 }
 
-module.exports = { piRoot, extPath, jitiLoad };
+module.exports = { piRoot, extPath, jitiLoad, resolveEntry };
